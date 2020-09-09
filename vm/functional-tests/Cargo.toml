@@ -9,7 +9,7 @@ edition = "2018"
 [dependencies]
 anyhow = "1.0"
 tempfile = "3.1.0"
-datatest-stable = {git = "https://github.com/starcoinorg/libra", rev="8b9fb2a00721f3bc3484f787ab17d387b174a140" }
+datatest-stable = {git = "https://github.com/starcoinorg/libra", rev="5a504b6913aad6318e3cdf572ae5242ed88f0847" }
 stdlib = { package="stdlib", path = "../stdlib"}
 once_cell = "1.4.1"
 regex = { version = "1.3.9", default-features = false, features = ["std", "perf"] }

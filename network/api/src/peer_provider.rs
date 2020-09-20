@@ -7,6 +7,7 @@ use anyhow::{format_err, Result};
 use futures::future::BoxFuture;
 use futures::{FutureExt, TryFutureExt};
 use rand::prelude::IteratorRandom;
+use starcoin_types::block::BlockNumber;
 
 pub trait PeerProvider {
     fn identify(&self) -> PeerId;
@@ -31,33 +32,53 @@ pub trait PeerProvider {
             .boxed()
     }
 
-    fn select_peers<P>(&self, predicate: P) -> BoxFuture<Result<Vec<PeerInfo>>>
-    where
-        P: Fn(&PeerInfo) -> bool + Send + 'static,
-    {
+    fn best_peer_selector(&self) -> BoxFuture<Result<PeerSelector>> {
         self.best_peer_set()
-            .and_then(|peers| async move {
-                Ok(peers
-                    .into_iter()
-                    .filter(|peer| predicate(peer))
-                    .collect::<Vec<PeerInfo>>())
-            })
+            .and_then(|peers| async move { Ok(PeerSelector::new(peers)) })
             .boxed()
     }
+}
 
-    fn select_one<P>(&self, predicate: P) -> BoxFuture<Result<Option<PeerInfo>>>
+pub struct PeerSelector {
+    //TODO peers lazy load.
+    peers: Vec<PeerInfo>,
+}
+
+impl PeerSelector {
+    pub fn new(peers: Vec<PeerInfo>) -> Self {
+        Self { peers }
+    }
+
+    pub fn filter<P>(self, predicate: P) -> Self
     where
         P: Fn(&PeerInfo) -> bool + Send + 'static,
     {
-        self.select_peers(predicate)
-            .and_then(|peers| async move {
-                let peer = if peers.is_empty() {
-                    None
-                } else {
-                    peers.into_iter().choose(&mut rand::thread_rng())
-                };
-                Ok(peer)
-            })
-            .boxed()
+        Self::new(
+            self.peers
+                .into_iter()
+                .filter(|peer| predicate(peer))
+                .collect(),
+        )
+    }
+
+    pub fn filter_by_block_number(self, block_number: BlockNumber) -> Self {
+        self.filter(move |peer| peer.latest_header.number >= block_number)
+    }
+
+    pub fn random(self) -> Option<PeerInfo> {
+        self.peers.into_iter().choose(&mut rand::thread_rng())
+    }
+
+    pub fn first(mut self) -> Option<PeerInfo> {
+        self.peers.pop()
+    }
+}
+
+impl IntoIterator for PeerSelector {
+    type Item = PeerInfo;
+    type IntoIter = std::vec::IntoIter<PeerInfo>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.peers.into_iter()
     }
 }

@@ -14,11 +14,11 @@ use futures_timer::Delay;
 use logger::prelude::*;
 use network_api::{NetworkService, PeerId};
 use starcoin_network_rpc_api::{gen_client::NetworkRpcClient, BlockBody};
+use starcoin_types::block::{Block, BlockBody as RealBlockBody, BlockHeader, BlockNumber};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::sync::Arc;
 use std::time::Duration;
-use types::block::{Block, BlockBody as RealBlockBody, BlockHeader, BlockNumber};
 
 #[cfg(test)]
 mod test_block_sync;
@@ -85,6 +85,9 @@ impl SyncDataEvent {
 #[derive(Debug)]
 struct BlockSyncTask {
     wait_2_sync: VecDeque<BlockIdAndNumber>,
+    ancestor_number: BlockNumber,
+    target_number: BlockNumber,
+    next: BlockIdAndNumber,
 }
 
 impl BlockSyncTask {

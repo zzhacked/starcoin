@@ -1,3 +1,4 @@
+use crate::verified_rpc_client::{RpcEntryVerify, RpcVerify};
 use anyhow::{format_err, Result};
 use crypto::hash::HashValue;
 use crypto::hash::PlainCryptoHash;
@@ -11,9 +12,7 @@ use starcoin_network_rpc_api::{
     GetBlockHeadersByNumber, GetTxns, TransactionsData,
 };
 use starcoin_state_tree::StateNode;
-use std::collections::HashSet;
-use std::hash::Hash;
-use types::{
+use starcoin_types::{
     block::{BlockHeader, BlockInfo, BlockNumber},
     peer_info::PeerId,
     transaction::TransactionInfo,
@@ -21,83 +20,6 @@ use types::{
 
 const HEAD_CT: usize = 10;
 const STABLELIZE_BLCOK_NUM: usize = 7;
-
-trait RpcVerify<C: Clone> {
-    fn filter<T, F>(&mut self, rpc_data: Vec<T>, hash_fun: F) -> Vec<T>
-    where
-        F: Fn(&T) -> C;
-}
-
-struct RpcEntryVerify<C: Clone + Eq + Hash> {
-    entries: HashSet<C>,
-}
-
-impl<C: Clone + Eq + Hash> RpcVerify<C> for RpcEntryVerify<C> {
-    fn filter<T, F>(&mut self, rpc_data: Vec<T>, hash_fun: F) -> Vec<T>
-    where
-        F: Fn(&T) -> C,
-    {
-        let mut rpc_data = rpc_data;
-        let mut dirty_data = Vec::new();
-        for data in rpc_data.as_slice().iter() {
-            let hash = hash_fun(data);
-            if !self.entries.contains(&hash) {
-                dirty_data.push(hash);
-            }
-        }
-
-        if !dirty_data.is_empty() {
-            for hash in dirty_data.as_slice().iter() {
-                rpc_data.retain(|d| hash_fun(d) != *hash);
-            }
-        }
-
-        rpc_data
-    }
-}
-
-impl From<&Vec<HashValue>> for RpcEntryVerify<HashValue> {
-    fn from(data: &Vec<HashValue>) -> Self {
-        let mut entries = HashSet::new();
-        for hash in data.iter() {
-            entries.insert(*hash);
-        }
-        Self { entries }
-    }
-}
-
-impl From<&Vec<BlockNumber>> for RpcEntryVerify<BlockNumber> {
-    fn from(data: &Vec<BlockNumber>) -> Self {
-        let mut entries = HashSet::new();
-        for number in data.iter() {
-            entries.insert(*number);
-        }
-        Self { entries }
-    }
-}
-
-impl From<&GetTxns> for RpcEntryVerify<HashValue> {
-    fn from(data: &GetTxns) -> Self {
-        let mut entries = HashSet::new();
-        if let Some(ids) = data.clone().ids {
-            for hash in ids.into_iter() {
-                entries.insert(hash);
-            }
-        }
-        Self { entries }
-    }
-}
-
-impl From<&GetBlockHeadersByNumber> for RpcEntryVerify<BlockNumber> {
-    fn from(data: &GetBlockHeadersByNumber) -> Self {
-        let numbers: Vec<BlockNumber> = data.clone().into();
-        let mut entries = HashSet::new();
-        for number in numbers.into_iter() {
-            entries.insert(number);
-        }
-        Self { entries }
-    }
-}
 
 pub async fn get_txns(
     client: &NetworkRpcClient,

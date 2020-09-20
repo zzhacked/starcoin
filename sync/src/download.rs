@@ -7,6 +7,7 @@ use crate::helper::{
 use crate::state_sync::StateSyncTaskActor;
 use crate::sync_metrics::{LABEL_BLOCK, LABEL_STATE, SYNC_METRICS};
 use crate::sync_task::{SyncTask, SyncTaskType};
+use crate::verified_rpc_client::VerifiedRpcClient;
 use actix::prelude::*;
 use actix::{Actor, Addr, AsyncContext, Context, Handler};
 use anyhow::{format_err, Result};
@@ -21,21 +22,23 @@ use starcoin_chain_service::ChainReaderService;
 use starcoin_network_rpc_api::{
     gen_client::NetworkRpcClient, BlockBody, GetBlockHeaders, RemoteChainStateReader,
 };
-use starcoin_service_registry::ServiceRef;
+use starcoin_service_registry::{
+    ActorService, EventHandler, ServiceContext, ServiceHandler, ServiceRef,
+};
 use starcoin_storage::Store;
 use starcoin_sync_api::SyncNotify;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
-use traits::ChainAsyncService;
-use txpool::TxPoolService;
-use types::{
+use starcoin_types::{
     block::{Block, BlockHeader, BlockInfo, BlockNumber, BlockState},
     peer_info::PeerId,
     startup_info::StartupInfo,
     system_events::{MinedBlock, SyncDone, SystemStarted},
     U256,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use traits::ChainAsyncService;
+use txpool::TxPoolService;
 
 #[derive(Debug, Message)]
 #[rtype(result = "Result<()>")]
@@ -45,14 +48,9 @@ pub enum SyncEvent {
 
 const _MIN_PEER_SIZE: usize = 5;
 
-pub struct DownloadActor<N>
-where
-    N: NetworkService + 'static,
-{
-    downloader: Arc<Downloader<N>>,
+pub struct DownloadActor {
+    downloader: Arc<Downloader>,
     self_peer_id: Arc<PeerId>,
-    rpc_client: NetworkRpcClient,
-    network: N,
     bus: Addr<BusActor>,
     sync_event_sender: mpsc::Sender<SyncEvent>,
     sync_duration: Duration,
@@ -64,10 +62,7 @@ where
     node_config: Arc<NodeConfig>,
 }
 
-impl<N> DownloadActor<N>
-where
-    N: NetworkService + 'static,
-{
+impl DownloadActor {
     pub fn launch(
         node_config: Arc<NodeConfig>,
         peer_id: Arc<PeerId>,
@@ -77,7 +72,7 @@ where
         storage: Arc<dyn Store>,
         txpool: TxPoolService,
         startup_info: StartupInfo,
-    ) -> Result<Addr<DownloadActor<N>>> {
+    ) -> Result<Addr<DownloadActor>> {
         let download_actor = DownloadActor::create(move |ctx| {
             let (sync_event_sender, sync_event_receiver) = mpsc::channel(100);
             ctx.add_message_stream(sync_event_receiver);
@@ -116,57 +111,38 @@ where
     }
 }
 
-impl<N> Actor for DownloadActor<N>
-where
-    N: NetworkService + 'static,
-{
-    type Context = Context<Self>;
+impl ActorService for DownloadActor {
+    fn started(&mut self, ctx: &mut ServiceContext<Self>) {
+        ctx.subscribe::<MinedBlock>();
+        ctx.subscribe::<SystemStarted>();
+    }
 
-    fn started(&mut self, ctx: &mut Self::Context) {
-        ctx.set_mailbox_capacity(1024);
-        let recipient = ctx.address().recipient::<MinedBlock>();
-        self.bus
-            .send(Subscription { recipient })
-            .into_actor(self)
-            .then(|_res, act, _ctx| async {}.into_actor(act))
-            .wait(ctx);
-
-        let sys_event_recipient = ctx.address().recipient::<SystemStarted>();
-        self.bus
-            .send(Subscription {
-                recipient: sys_event_recipient,
-            })
-            .into_actor(self)
-            .then(|_res, act, _ctx| async {}.into_actor(act))
-            .wait(ctx);
+    fn stopped(&mut self, ctx: &mut ServiceContext<Self>) {
+        ctx.unsubscribe::<MinedBlock>();
+        ctx.unsubscribe::<SystemStarted>();
     }
 }
 
-impl<N> Handler<SyncTaskType> for DownloadActor<N>
-where
-    N: NetworkService + 'static,
-{
-    type Result = Result<()>;
+//
+// impl Handler<SyncTaskType> for DownloadActor
+//
+// {
+//     type Result = Result<()>;
+//
+//     fn handle(&mut self, task_type: SyncTaskType, _ctx: &mut Self::Context) -> Self::Result {
+//         self.sync_task.drop_task(&task_type);
+//         if self.sync_task.is_finish() {
+//             self.bus.do_send(Broadcast { msg: SyncDone });
+//             self.need_sync_state.store(false, Ordering::Relaxed);
+//             self.syncing.store(false, Ordering::Relaxed);
+//             self.downloader.set_pivot(None);
+//         }
+//         Ok(())
+//     }
+// }
 
-    fn handle(&mut self, task_type: SyncTaskType, _ctx: &mut Self::Context) -> Self::Result {
-        self.sync_task.drop_task(&task_type);
-        if self.sync_task.is_finish() {
-            self.bus.do_send(Broadcast { msg: SyncDone });
-            self.need_sync_state.store(false, Ordering::Relaxed);
-            self.syncing.store(false, Ordering::Relaxed);
-            self.downloader.set_pivot(None);
-        }
-        Ok(())
-    }
-}
-
-impl<N> Handler<MinedBlock> for DownloadActor<N>
-where
-    N: NetworkService + 'static,
-{
-    type Result = ();
-
-    fn handle(&mut self, msg: MinedBlock, _ctx: &mut Self::Context) -> Self::Result {
+impl EventHandler<Self, MinedBlock> for DownloadActor {
+    fn handle_event(&mut self, msg: MinedBlock, ctx: &mut ServiceContext<DownloadActor>) {
         debug!("try connect mined block.");
         let MinedBlock(new_block) = msg;
         match self.downloader.connect_block(new_block.as_ref().clone()) {
@@ -178,13 +154,8 @@ where
     }
 }
 
-impl<N> Handler<SystemStarted> for DownloadActor<N>
-where
-    N: NetworkService + 'static,
-{
-    type Result = ();
-
-    fn handle(&mut self, _msg: SystemStarted, ctx: &mut Self::Context) -> Self::Result {
+impl EventHandler<Self, SystemStarted> for DownloadActor {
+    fn handle_event(&mut self, msg: SystemStarted, ctx: &mut ServiceContext<DownloadActor>) {
         if !self.ready.load(Ordering::Relaxed) {
             ctx.run_interval(self.sync_duration, move |download, _ctx| {
                 debug!("Send sync event.");
@@ -200,12 +171,8 @@ where
     }
 }
 
-impl<N> Handler<SyncEvent> for DownloadActor<N>
-where
-    N: NetworkService + 'static,
-{
-    type Result = Result<()>;
-    fn handle(&mut self, item: SyncEvent, ctx: &mut Self::Context) -> Self::Result {
+impl EventHandler<Self, SyncEvent> for DownloadActor {
+    fn handle_event(&mut self, item: SyncEvent, ctx: &mut ServiceContext<DownloadActor>) {
         match item {
             SyncEvent::DoSync => {
                 if !self.sync_task.is_finish() {
@@ -237,18 +204,11 @@ where
                 }
             }
         }
-
-        Ok(())
     }
 }
 
-impl<N> Handler<SyncNotify> for DownloadActor<N>
-where
-    N: NetworkService + 'static,
-{
-    type Result = ();
-
-    fn handle(&mut self, msg: SyncNotify, _ctx: &mut Self::Context) -> Self::Result {
+impl EventHandler<Self, SyncNotify> for DownloadActor {
+    fn handle_event(&mut self, msg: SyncNotify, ctx: &mut ServiceContext<DownloadActor>) {
         match msg {
             SyncNotify::NewPeerMsg(peer_id) => {
                 self.sync_task.activate_tasks();
@@ -262,20 +222,17 @@ where
     }
 }
 
-impl<N> DownloadActor<N>
-where
-    N: NetworkService + 'static,
-{
+impl DownloadActor {
     fn sync_state_and_block(
         self_peer_id: PeerId,
         main_network: bool,
-        downloader: Arc<Downloader<N>>,
+        downloader: Arc<Downloader>,
         rpc_client: NetworkRpcClient,
         network: N,
         storage: Arc<dyn Store>,
         sync_task: SyncTask,
         syncing: Arc<AtomicBool>,
-        download_address: Addr<DownloadActor<N>>,
+        download_address: Addr<DownloadActor>,
     ) {
         Arbiter::spawn(async move {
             SYNC_METRICS
@@ -329,14 +286,12 @@ where
     async fn sync_state_and_block_inner(
         self_peer_id: PeerId,
         main_network: bool,
-        downloader: Arc<Downloader<N>>,
-        rpc_client: NetworkRpcClient,
-        network: N,
+        downloader: Arc<Downloader>,
         storage: Arc<dyn Store>,
         sync_task: SyncTask,
-        download_address: Addr<DownloadActor<N>>,
+        download_address: Addr<DownloadActor>,
     ) -> Result<bool> {
-        if let Some(best_peer) = network.best_peer().await? {
+        if let Some(best_peer) = downloader.verified_client.best_peer().await? {
             //1. ancestor
             let master_header = downloader
                 .chain_reader
@@ -355,8 +310,6 @@ where
             if let Some(ancestor_header) = downloader
                 .find_ancestor_header(
                     best_peer.get_peer_id(),
-                    &rpc_client,
-                    network.clone(),
                     begin_number,
                     total_difficulty,
                     false,
@@ -366,7 +319,10 @@ where
                 let ancestor = ancestor_header.number();
 
                 // 2. pivot
-                let (latest_block_id, latest_number) = best_peer.get_hash_number();
+                let header = best_peer.get_latest_header();
+                let latest_block_id = header.id();
+                let latest_number = header.number();
+
                 let min_behind = if main_network {
                     MAIN_MIN_BLOCKS_BEHIND
                 } else {
@@ -382,13 +338,13 @@ where
                 }
 
                 // 3. sync task
-                let (root, block_info) = Downloader::<N>::get_pivot(
-                    &rpc_client,
-                    best_peer.get_peer_id(),
-                    (latest_block_id, latest_number),
-                    min_behind as usize,
-                )
-                .await?;
+                let (root, block_info) = downloader
+                    .get_pivot(
+                        best_peer.get_peer_id(),
+                        (latest_block_id, latest_number),
+                        min_behind as usize,
+                    )
+                    .await?;
                 let block_sync_task = BlockSyncTaskActor::launch(
                     &ancestor_header,
                     latest_number,
@@ -438,12 +394,12 @@ where
     }
 
     fn sync_block_from_best_peer(
-        downloader: Arc<Downloader<N>>,
+        downloader: Arc<Downloader>,
         rpc_client: NetworkRpcClient,
         network: N,
         sync_task: SyncTask,
         syncing: Arc<AtomicBool>,
-        download_address: Addr<DownloadActor<N>>,
+        download_address: Addr<DownloadActor>,
     ) {
         if !syncing.load(Ordering::Relaxed) {
             syncing.store(true, Ordering::Relaxed);
@@ -476,11 +432,11 @@ where
     }
 
     async fn sync_block_from_best_peer_inner(
-        downloader: Arc<Downloader<N>>,
+        downloader: Arc<Downloader>,
         rpc_client: NetworkRpcClient,
         network: N,
         sync_task: SyncTask,
-        download_address: Addr<DownloadActor<N>>,
+        download_address: Addr<DownloadActor>,
     ) -> Result<bool> {
         if let Some(best_peer) = network.best_peer().await? {
             if let Some(header) = downloader.chain_reader.clone().master_head_header().await? {
@@ -541,21 +497,16 @@ where
 }
 
 /// Send download message
-pub struct Downloader<N>
-where
-    N: NetworkService + 'static,
-{
+pub struct Downloader {
     chain_reader: ServiceRef<ChainReaderService>,
-    block_connector: BlockConnector<N>,
+    block_connector: BlockConnector,
+    verified_client: VerifiedRpcClient,
 }
 
 const MIN_BLOCKS_BEHIND: u64 = 50;
 const MAIN_MIN_BLOCKS_BEHIND: u64 = 100;
 
-impl<N> Downloader<N>
-where
-    N: NetworkService + 'static,
-{
+impl Downloader {
     pub fn new(
         chain_reader: ServiceRef<ChainReaderService>,
         config: Arc<NodeConfig>,
@@ -565,17 +516,18 @@ where
         bus: Addr<BusActor>,
         remote_chain_state: Option<RemoteChainStateReader>,
     ) -> Self {
-        Downloader {
-            block_connector: BlockConnector::new(
-                config,
-                startup_info,
-                storage,
-                txpool,
-                bus,
-                remote_chain_state,
-            ),
-            chain_reader,
-        }
+        // Downloader {
+        //     block_connector: BlockConnector::new(
+        //         config,
+        //         startup_info,
+        //         storage,
+        //         txpool,
+        //         bus,
+        //         remote_chain_state,
+        //     ),
+        //     chain_reader,
+        // }
+        unimplemented!()
     }
 
     pub fn get_chain_reader(&self) -> ServiceRef<ChainReaderService> {
@@ -585,14 +537,13 @@ where
     pub async fn find_ancestor_header(
         &self,
         peer_id: PeerId,
-        rpc_client: &NetworkRpcClient,
-        network: N,
         block_number: BlockNumber,
         total_difficulty: U256,
         is_full_mode: bool,
     ) -> Result<Option<BlockHeader>> {
         let mut ancestor_header = None;
-        let peer_info = network
+        let peer_info = self
+            .verified_client
             .get_peer(peer_id.clone())
             .await?
             .ok_or_else(|| format_err!("get peer {:?} not exist.", peer_id))?;
@@ -611,9 +562,10 @@ where
         loop {
             let get_block_headers_by_number_req =
                 get_headers_msg_for_ancestor(latest_block_number, 1);
-            let headers =
-                get_headers_by_number(rpc_client, peer_id.clone(), get_block_headers_by_number_req)
-                    .await?;
+            let headers = self
+                .verified_client
+                .get_headers_by_number(peer_id.clone(), get_block_headers_by_number_req)
+                .await?;
             if !headers.is_empty() {
                 latest_block_number = headers
                     .last()
@@ -676,24 +628,22 @@ where
     }
 
     async fn get_pivot(
-        rpc_client: &NetworkRpcClient,
+        self,
         peer_id: PeerId,
         latest_block: (HashValue, BlockNumber),
         step: usize,
     ) -> Result<(BlockHeader, BlockInfo)> {
         let get_headers_req = GetBlockHeaders::new(latest_block.0, step, true, 1);
-        let mut headers = get_headers_with_peer(
-            &rpc_client,
-            peer_id.clone(),
-            get_headers_req,
-            latest_block.1,
-        )
-        .await?;
+        let mut headers = self
+            .verified_client
+            .get_headers_with_peer(peer_id.clone(), get_headers_req, latest_block.1)
+            .await?;
         if let Some(pivot) = headers.pop() {
             let number = latest_block.1 - step as u64;
             if pivot.number() == number {
-                let mut infos =
-                    get_info_by_hash(&rpc_client, peer_id, vec![pivot.parent_hash()]).await?;
+                let mut infos = self
+                    .get_info_by_hash(peer_id, vec![pivot.parent_hash()])
+                    .await?;
                 if let Some(block_info) = infos.pop() {
                     if Self::verify_pivot(&pivot, &block_info) {
                         Ok((pivot, block_info))
@@ -739,7 +689,7 @@ where
         self.block_connector.connect_block(block)
     }
 
-    fn set_pivot(&self, pivot: Option<PivotBlock<N>>) {
+    fn set_pivot(&self, pivot: Option<PivotBlock>) {
         self.block_connector.update_pivot(pivot);
     }
 }

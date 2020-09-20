@@ -1,6 +1,7 @@
 use actix::prelude::*;
 use anyhow::Result;
 use parking_lot::RwLock;
+use starcoin_types::block::BlockNumber;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -86,3 +87,7 @@ impl SyncTaskState {
         self == &SyncTaskState::Finish
     }
 }
+
+pub trait SyncTaskTrait {}
+
+pub struct BlockSyncTask {}

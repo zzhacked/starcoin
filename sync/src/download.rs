@@ -593,7 +593,7 @@ where
     ) -> Result<Option<BlockHeader>> {
         let mut ancestor_header = None;
         let peer_info = network
-            .get_peer(&peer_id.clone())
+            .get_peer(peer_id.clone())
             .await?
             .ok_or_else(|| format_err!("get peer {:?} not exist.", peer_id))?;
 

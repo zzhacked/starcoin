@@ -5,7 +5,7 @@ use crate::module::map_err;
 use futures::future::TryFutureExt;
 use futures::FutureExt;
 use jsonrpc_core::Result;
-use network_api::NetworkService;
+use network_api::PeerProvider;
 use starcoin_config::NodeConfig;
 use starcoin_network::NetworkAsyncService;
 use starcoin_rpc_api::node::{NodeApi, NodeInfo};
@@ -51,7 +51,7 @@ impl NodeApi for NodeRpcImpl {
 
     fn peers(&self) -> FutureResult<Vec<PeerInfo>> {
         let service = self.service.clone().unwrap();
-        let fut = async move { service.peer_set().await };
+        let fut = async move { service.best_peer_set().await };
         Box::new(fut.map_err(map_err).boxed().compat())
     }
 

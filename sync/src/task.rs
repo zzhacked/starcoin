@@ -5,7 +5,7 @@ use crate::verified_rpc_client::VerifiedRpcClient;
 use anyhow::{format_err, Result};
 use futures::future::{BoxFuture, Future};
 use futures::task::{Context, Poll};
-use futures::FutureExt;
+use futures::{FutureExt, Stream};
 use logger::prelude::*;
 use starcoin_accumulator::accumulator_info::AccumulatorInfo;
 use starcoin_accumulator::{Accumulator, AccumulatorTreeStore, MerkleAccumulator};
@@ -35,8 +35,8 @@ impl BlockIdFetcher for VerifiedRpcClient {
     }
 }
 
-pub trait BlockFetcher {
-    fn fetch(&self, block_id: HashValue) -> BoxFuture<Result<Block>>;
+pub trait BlockFetcher: Send + Sync {
+    fn fetch(&self, block_id: HashValue) -> BoxFuture<Result<Option<Block>>>;
 }
 
 pub struct BlockAccumulatorSyncTask {
@@ -82,7 +82,7 @@ impl Future for BlockAccumulatorSyncTask {
                 max_size = self.batch_size;
             }
             let fetcher = self.fetcher.clone();
-            let block_ids_fut = self.fetch_task.get_or_insert_with(move || {
+            let block_ids_fut = self.fetch_task.get_or_insert_with(|| {
                 async move {
                     debug!(
                         "Accumulator sync task: start_number: {}, target_number: {}",
@@ -95,7 +95,7 @@ impl Future for BlockAccumulatorSyncTask {
 
             match block_ids_fut.as_mut().poll(cx) {
                 Poll::Ready(result) => {
-                    self.as_mut().fetch_task = None;
+                    self.fetch_task = None;
                     match result {
                         Err(e) => {
                             //TODO add retry limit.
@@ -107,6 +107,7 @@ impl Future for BlockAccumulatorSyncTask {
                                 let current_leaves = self.accumulator.num_leaves();
                                 match current_leaves.cmp(&self.target.num_leaves) {
                                     Ordering::Greater => {
+                                        //This may be a case where BlockIdFetcher returns HashValues that exceeds max_size, which should never happen if the rpc client checks the return value correctly.
                                         return Poll::Ready(Err(format_err!("Unexpect status, maybe rpc client return invalid result: {:?}", block_ids)));
                                     }
                                     Ordering::Less => continue,
@@ -132,14 +133,120 @@ impl Future for BlockAccumulatorSyncTask {
     }
 }
 
+pub enum TaskError {
+    TaskFail(anyhow::Error),
+    Cancel,
+}
+
+pub struct BlockFetchTask {
+    block_id: HashValue,
+    fetcher: Arc<dyn BlockFetcher>,
+}
+
+impl Future for BlockFetchTask {
+    type Output = Result<Block, TaskError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        unimplemented!()
+    }
+}
+
+pub struct BlockSyncTask {
+    accumulator: MerkleAccumulator,
+    current_number: BlockNumber,
+    fetcher: Arc<dyn BlockFetcher>,
+    fetch_task: Option<Pin<Box<dyn Future<Output = Result<Option<Block>>> + Send>>>,
+}
+
+impl BlockSyncTask {
+    pub fn new<F>(accumulator: MerkleAccumulator, start_number: BlockNumber, fetcher: F) -> Self
+    where
+        F: BlockFetcher + 'static,
+    {
+        Self {
+            accumulator,
+            current_number: start_number,
+            fetcher: Arc::new(fetcher),
+            fetch_task: None,
+        }
+    }
+}
+
+impl Stream for BlockSyncTask {
+    type Item = Block;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        loop {
+            let current_number = self.current_number;
+            let block_id = match self.accumulator.get_leaf(current_number) {
+                Ok(Some(id)) => id,
+                Ok(None) => {
+                    return if current_number == self.accumulator.num_leaves() - 1 {
+                        //task is finished.
+                        Poll::Ready(None)
+                    } else {
+                        error!(
+                            "Block sync task end by accumulator get leaf({}) return None",
+                            current_number
+                        );
+                        Poll::Ready(None)
+                    };
+                }
+                Err(e) => {
+                    error!("Block sync task end by accumulator error: {:?}", e);
+                    return Poll::Ready(None);
+                }
+            };
+            let fetcher = self.fetcher.clone();
+            let task_fut = self.fetch_task.get_or_insert_with(|| {
+                async move {
+                    debug!(
+                        "Block sync task: current_number: {}, id: {:?}",
+                        current_number, block_id
+                    );
+                    fetcher.fetch(block_id).await
+                }
+                .boxed()
+            });
+            match task_fut.as_mut().poll(cx) {
+                Poll::Ready(result) => {
+                    self.fetch_task = None;
+                    match result {
+                        Err(e) => {
+                            //TODO add retry limit.
+                            error!("Fetch block ids error: {:?}", e);
+                            continue;
+                        }
+                        Ok(Some(block)) => {
+                            self.current_number = current_number + 1;
+                            return Poll::Ready(Some(block));
+                        }
+                        Ok(None) => {
+                            warn!(
+                                "BlockFetcher return None when get block by {:?}, retry.",
+                                block_id
+                            );
+                            continue;
+                        }
+                    }
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::FutureExt;
+    use futures::{FutureExt, StreamExt};
     use futures_timer::Delay;
     use pin_utils::core_reexport::time::Duration;
     use starcoin_accumulator::tree_store::mock::MockAccumulatorStore;
     use starcoin_accumulator::MerkleAccumulator;
+    use starcoin_types::block::BlockHeader;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
 
     struct MockBlockIdFetcher {
         accumulator: MerkleAccumulator,
@@ -192,8 +299,94 @@ mod tests {
         let store2 = MockAccumulatorStore::copy_from(store.as_ref());
         let sync_task =
             BlockAccumulatorSyncTask::new(Arc::new(store2), info0, info1.clone(), fetcher, 7);
-        let info2 = async_std::task::spawn(sync_task).await?;
+        let info2 = sync_task.await?;
         assert_eq!(info1, info2);
         Ok(())
     }
+
+    #[derive(Default)]
+    struct MockBlockFetcher {
+        blocks: Mutex<HashMap<HashValue, Block>>,
+    }
+
+    impl MockBlockFetcher {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn put(&self, block: Block) {
+            self.blocks.lock().unwrap().insert(block.id(), block);
+        }
+    }
+
+    impl BlockFetcher for MockBlockFetcher {
+        fn fetch(&self, block_id: HashValue) -> BoxFuture<Result<Option<Block>>> {
+            let block = self.blocks.lock().unwrap().get(&block_id).cloned();
+            async {
+                Delay::new(Duration::from_millis(100)).await;
+                Ok(block)
+            }
+            .boxed()
+        }
+    }
+
+    fn build_block_fetcher(total_blocks: u64) -> (MockBlockFetcher, MerkleAccumulator) {
+        let fetcher = MockBlockFetcher::new();
+
+        let store = Arc::new(MockAccumulatorStore::new());
+        let accumulator = MerkleAccumulator::new_empty(store.clone());
+        for i in 0..total_blocks {
+            let mut header = BlockHeader::random();
+            header.number = i;
+            let block = Block::new(header, vec![]);
+            accumulator.append(&[block.id()]).unwrap();
+            fetcher.put(block);
+        }
+        (fetcher, accumulator)
+    }
+
+    #[stest::test]
+    async fn test_block_sync() -> Result<()> {
+        let total_blocks = 100;
+        let (fetcher, accumulator) = build_block_fetcher(total_blocks);
+        let sync_task = BlockSyncTask::new(accumulator, 0, fetcher);
+        let last_block_number = sync_task
+            .map(|block| block.header().number as i64)
+            .fold(-1, |parent, current| async move {
+                //ensure return block is ordered
+                assert_eq!(
+                    parent + 1,
+                    current,
+                    "block sync task not return ordered blocks"
+                );
+                current
+            })
+            .await;
+
+        assert_eq!(last_block_number as u64, total_blocks - 1);
+        Ok(())
+    }
+
+    // #[stest::test]
+    // async fn test_block_sync_buffered() -> Result<()> {
+    //     let total_blocks = 100;
+    //     let (fetcher, accumulator) = build_block_fetcher(total_blocks);
+    //     let sync_task = BlockSyncTask::new(accumulator, 0, fetcher);
+    //     let buffered_task = sync_task.buffered(7);
+    //     let last_block_number = buffered_task
+    //         .map(|block| block.header().number as i64)
+    //         .fold(-1, |parent, current| async move {
+    //             //ensure return block is ordered
+    //             assert_eq!(
+    //                 parent + 1,
+    //                 current,
+    //                 "block sync task not return ordered blocks"
+    //             );
+    //             current
+    //         })
+    //         .await;
+    //
+    //     assert_eq!(last_block_number as u64, total_blocks - 1);
+    //     Ok(())
+    // }
 }

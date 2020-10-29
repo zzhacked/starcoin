@@ -133,24 +133,6 @@ impl Future for BlockAccumulatorSyncTask {
     }
 }
 
-pub enum TaskError {
-    TaskFail(anyhow::Error),
-    Cancel,
-}
-
-pub struct BlockFetchTask {
-    block_id: HashValue,
-    fetcher: Arc<dyn BlockFetcher>,
-}
-
-impl Future for BlockFetchTask {
-    type Output = Result<Block, TaskError>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        unimplemented!()
-    }
-}
-
 pub struct BlockSyncTask {
     accumulator: MerkleAccumulator,
     current_number: BlockNumber,
@@ -239,6 +221,7 @@ impl Stream for BlockSyncTask {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::future_task::{TaskError, TaskGenerator, TaskState};
     use futures::{FutureExt, StreamExt};
     use futures_timer::Delay;
     use pin_utils::core_reexport::time::Duration;
@@ -304,6 +287,55 @@ mod tests {
         Ok(())
     }
 
+    // #[derive(Clone)]
+    // pub struct AccumulatorSyncState{
+    //     accumulator: MerkleAccumulator,
+    //     target: AccumulatorInfo,
+    //     fetcher: Arc<dyn BlockIdFetcher>,
+    // }
+    //
+    // impl TaskState for AccumulatorSyncState{
+    //
+    // }
+    //
+    // pub struct AccumulatorSyncTaskGenerator{
+    // }
+    //
+    // impl TaskGenerator for AccumulatorSyncTaskGenerator{
+    //     type State = AccumulatorSyncState;
+    //     type Item = HashValue;
+    //
+    //     fn new_sub_task(state: Self::State) -> BoxFuture<'static, Result<Self::Item>> {
+    //         unimplemented!()
+    //     }
+    //
+    //     fn next_state(pre_state: &Self::State) -> Option<Self::State> {
+    //         unimplemented!()
+    //     }
+    // }
+    //
+    // #[stest::test]
+    // async fn test_accumulator_sync_by_future_task() -> Result<()> {
+    //
+    //     let store = Arc::new(MockAccumulatorStore::new());
+    //     let accumulator = MerkleAccumulator::new_empty(store.clone());
+    //     for _i in 0..100 {
+    //         accumulator.append(&[HashValue::random()])?;
+    //     }
+    //     accumulator.flush().unwrap();
+    //     let info0 = accumulator.get_info();
+    //     assert_eq!(info0.num_leaves, 100);
+    //     for _i in 0..100 {
+    //         accumulator.append(&[HashValue::random()])?;
+    //     }
+    //     accumulator.flush().unwrap();
+    //     let info1 = accumulator.get_info();
+    //     assert_eq!(info1.num_leaves, 200);
+    //
+    //
+    //     Ok(())
+    // }
+
     #[derive(Default)]
     struct MockBlockFetcher {
         blocks: Mutex<HashMap<HashValue, Block>>,
@@ -364,6 +396,93 @@ mod tests {
             .await;
 
         assert_eq!(last_block_number as u64, total_blocks - 1);
+        Ok(())
+    }
+
+    #[derive(Clone)]
+    struct BlockSyncTaskState {
+        accumulator: Arc<MerkleAccumulator>,
+        current_number: BlockNumber,
+        fetcher: Arc<dyn BlockFetcher>,
+    }
+
+    impl BlockSyncTaskState {
+        pub fn new<F>(accumulator: MerkleAccumulator, start_number: BlockNumber, fetcher: F) -> Self
+        where
+            F: BlockFetcher + 'static,
+        {
+            Self {
+                accumulator: Arc::new(accumulator),
+                current_number: start_number,
+                fetcher: Arc::new(fetcher),
+            }
+        }
+    }
+
+    impl TaskState for BlockSyncTaskState {}
+
+    struct BlockSyncTaskGenerator {}
+
+    impl TaskGenerator for BlockSyncTaskGenerator {
+        type State = BlockSyncTaskState;
+        type Item = Block;
+
+        fn new_sub_task(state: Self::State) -> BoxFuture<'static, Result<Self::Item>> {
+            async move {
+                let hash = state.accumulator.get_leaf(state.current_number)?;
+                match hash {
+                    Some(hash) => state
+                        .fetcher
+                        .fetch(hash)
+                        .await?
+                        .ok_or_else(|| format_err!("Get block by id {:?} return None", hash)),
+                    None => Err(TaskError::Fail(format_err!(
+                        "Get leaf by number {:?} from accumulator return None",
+                        state.current_number
+                    ))
+                    .into()),
+                }
+            }
+            .boxed()
+        }
+
+        fn next_state(pre_state: &Self::State) -> Option<Self::State> {
+            if pre_state.current_number >= pre_state.accumulator.num_leaves() - 1 {
+                None
+            } else {
+                Some(BlockSyncTaskState {
+                    accumulator: pre_state.accumulator.clone(),
+                    current_number: pre_state.current_number + 1,
+                    fetcher: pre_state.fetcher.clone(),
+                })
+            }
+        }
+    }
+
+    #[stest::test]
+    async fn test_block_sync_by_future_task() -> Result<()> {
+        let total_blocks = 100;
+        let (fetcher, accumulator) = build_block_fetcher(total_blocks);
+        let blocks = BlockSyncTaskGenerator::new_task(
+            BlockSyncTaskState::new(accumulator, 0, fetcher),
+            5,
+            5,
+            vec![],
+        )
+        .await?;
+        assert_eq!(blocks.len(), total_blocks as usize);
+
+        blocks
+            .into_iter()
+            .map(|block| block.header().number as i64)
+            .fold(-1, |parent, current| {
+                assert_eq!(
+                    parent + 1,
+                    current,
+                    "block sync task not return ordered blocks"
+                );
+                current
+            });
         Ok(())
     }
 

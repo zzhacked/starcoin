@@ -7975,6 +7975,7 @@ dependencies = [
  "starcoin-vm-types",
  "stest",
  "test-helper",
+ "thiserror",
  "tokio 0.2.22",
 ]
 

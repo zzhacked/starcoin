@@ -2111,7 +2111,7 @@ dependencies = [
  "futures-retry",
  "futures-timer",
  "log 0.4.11",
- "pin-project 1.0.1",
+ "pin-project 0.4.27",
  "pin-utils",
  "rand 0.7.3",
  "starcoin-logger",

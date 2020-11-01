@@ -116,7 +116,7 @@ where
         }
     }
 
-    pub fn generate(self) -> (BoxFuture<'static, Result<C::Output>>, TaskHandle) {
+    pub fn generate(self) -> (BoxFuture<'static, Result<C::Output, TaskError>>, TaskHandle) {
         let fut = async move {
             let stream = FutureTaskStream::new(
                 self.init_state,
@@ -136,14 +136,14 @@ where
             let mut sink = FutureTaskSink::new(self.collector);
             sink.send_all(&mut buffered_stream).await?;
             let collector = sink.into_inner();
-            collector.finish()
+            collector.finish().map_err(TaskError::CollectorError)
         };
         let (abortable_fut, handle) = abortable(fut);
         (
             abortable_fut
                 .map(|result| match result {
                     Ok(result) => result,
-                    Err(_aborted) => Err(TaskError::Canceled.into()),
+                    Err(_aborted) => Err(TaskError::Canceled),
                 })
                 .boxed(),
             TaskHandle::new(handle),
@@ -350,7 +350,7 @@ mod tests {
         cancel_handle.cancel();
         let result = join_handle.await;
         assert!(result.is_err());
-        let task_err = result.err().unwrap().downcast::<TaskError>().unwrap();
+        let task_err = result.err().unwrap();
         assert!(task_err.is_canceled());
         let processed_messages = counter.load(Ordering::SeqCst);
         debug!("processed_messages before cancel: {}", processed_messages);
@@ -393,7 +393,7 @@ mod tests {
         .generate();
         let result = fut.await;
         assert!(result.is_err());
-        let task_err = result.err().unwrap().downcast::<TaskError>().unwrap();
+        let task_err = result.err().unwrap();
         assert!(task_err.is_retry_limit_reached());
         assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
@@ -411,7 +411,7 @@ mod tests {
         .0
         .await;
         assert!(result.is_err());
-        let task_err = result.err().unwrap().downcast::<TaskError>().unwrap();
+        let task_err = result.err().unwrap();
         assert!(task_err.is_collector_error());
     }
 
@@ -434,7 +434,7 @@ mod tests {
         .generate();
         let result = fut.await;
         assert!(result.is_err());
-        let task_err = result.err().unwrap().downcast::<TaskError>().unwrap();
+        let task_err = result.err().unwrap();
         assert!(task_err.is_break_error());
         assert_eq!(break_at, counter.load(Ordering::SeqCst));
     }

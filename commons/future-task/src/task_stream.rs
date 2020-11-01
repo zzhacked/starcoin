@@ -30,26 +30,24 @@ impl TaskErrorHandle {
 }
 
 impl ErrorHandler<anyhow::Error> for TaskErrorHandle {
-    type OutError = anyhow::Error;
+    type OutError = TaskError;
 
     fn handle(&mut self, attempt: usize, error: Error) -> RetryPolicy<Self::OutError> {
         match error.downcast::<TaskError>() {
             Ok(task_err) => match task_err {
-                TaskError::BreakError(e) => {
-                    RetryPolicy::ForwardError(TaskError::BreakError(e).into())
+                TaskError::BreakError(e) => RetryPolicy::ForwardError(TaskError::BreakError(e)),
+                TaskError::RetryLimitReached(attempt, error) => {
+                    RetryPolicy::ForwardError(TaskError::RetryLimitReached(attempt + 1, error))
                 }
-                TaskError::RetryLimitReached(attempt, error) => RetryPolicy::ForwardError(
-                    TaskError::RetryLimitReached(attempt + 1, error).into(),
-                ),
-                TaskError::Canceled => RetryPolicy::ForwardError(TaskError::Canceled.into()),
+                TaskError::Canceled => RetryPolicy::ForwardError(TaskError::Canceled),
                 TaskError::CollectorError(e) => {
-                    RetryPolicy::ForwardError(TaskError::CollectorError(e).into())
+                    RetryPolicy::ForwardError(TaskError::CollectorError(e))
                 }
             },
             Err(e) => {
                 debug!("Task error: {:?}, attempt: {}", e, attempt);
                 if attempt as u64 > self.max_retry_times {
-                    RetryPolicy::ForwardError(TaskError::RetryLimitReached(attempt, e).into())
+                    RetryPolicy::ForwardError(TaskError::RetryLimitReached(attempt, e))
                 } else if self.delay_milliseconds == 0 {
                     RetryPolicy::Repeat
                 } else {
@@ -89,7 +87,7 @@ impl<S> Stream for FutureTaskStream<S>
 where
     S: TaskState + 'static,
 {
-    type Item = BoxFuture<'static, Result<Vec<S::Item>>>;
+    type Item = BoxFuture<'static, Result<Vec<S::Item>, TaskError>>;
 
     fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.project();
@@ -101,7 +99,7 @@ where
 
                 let fut = async move {
                     let retry_fut = FutureRetry::new(
-                        move || -> Self::Item { state_to_factory.clone().new_sub_task() },
+                        move || state_to_factory.clone().new_sub_task(),
                         error_action,
                     );
                     retry_fut

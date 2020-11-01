@@ -103,7 +103,7 @@ impl<C, Item> Sink<Item> for FutureTaskSink<C>
 where
     C: TaskResultCollector<Item>,
 {
-    type Error = anyhow::Error;
+    type Error = TaskError;
 
     fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
@@ -113,7 +113,7 @@ where
         let this = self.project();
         this.collector
             .collect(item)
-            .map_err(|e| TaskError::CollectorError(e).into())
+            .map_err(TaskError::CollectorError)
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

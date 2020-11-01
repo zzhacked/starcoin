@@ -13,7 +13,7 @@ members = [
     "commons/proptest-helpers",
     "commons/service-registry",
     "commons/timeout-join-handler",
-    "commons/future-task",
+    "commons/stream-task",
     "types",
     "types/uint",
     "core/traits",

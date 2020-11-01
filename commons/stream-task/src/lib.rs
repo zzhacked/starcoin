@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[stest::test]
-    async fn test_future_task_stream() {
+    async fn test_task_stream() {
         let max = 100;
         let config = MockTestConfig::new_with_max(max);
         let mock_state = MockTaskState::new(config);
@@ -289,7 +289,7 @@ mod tests {
     }
 
     #[stest::test]
-    async fn test_future_task_counter() {
+    async fn test_counter_collector() {
         let max = 100;
         let config = MockTestConfig::new_with_max(max);
         let mock_state = MockTaskState::new(config);
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[stest::test]
-    async fn test_future_task_batch() {
+    async fn test_stream_task_batch() {
         let max = 100;
         for batch in 1..max {
             let config = MockTestConfig::new_with_batch(max, batch);
@@ -317,7 +317,7 @@ mod tests {
     }
 
     #[stest::test]
-    async fn test_future_task_vec_collector() {
+    async fn test_vec_collector() {
         let max = 100;
         let config = MockTestConfig::new_with_max(max);
         let mock_state = MockTaskState::new(config);
@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[stest::test]
-    async fn test_future_task_cancel() {
+    async fn test_task_cancel() {
         let max = 100;
         let delay_time = 10;
         let config = MockTestConfig::new_with_delay(max, delay_time);
@@ -358,7 +358,7 @@ mod tests {
     }
 
     #[stest::test]
-    async fn test_future_task_retry() {
+    async fn test_task_retry() {
         let max = 100;
         let max_retry_times = 5;
         let config = MockTestConfig::new_with_error(max, max_retry_times - 1);
@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[stest::test]
-    async fn test_future_task_retry_fail() {
+    async fn test_task_retry_fail() {
         let max = 100;
         let max_retry_times = 5;
         let counter = Arc::new(AtomicU64::new(0));

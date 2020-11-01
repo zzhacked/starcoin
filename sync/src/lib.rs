@@ -4,7 +4,6 @@
 mod block_connector;
 pub mod block_sync;
 pub mod download;
-pub mod future_task;
 pub mod helper;
 pub mod state_sync;
 mod sync;

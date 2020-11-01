@@ -2102,24 +2102,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3dcaa9ae7725d12cdb85b3ad99a434db70b468c09ded17e012d86b5c1010f7a7"
 
 [[package]]
-name = "future-task"
-version = "0.7.0"
-dependencies = [
- "anyhow",
- "async-std",
- "futures 0.3.5",
- "futures-retry",
- "futures-timer",
- "log 0.4.11",
- "pin-project 0.4.27",
- "pin-utils",
- "rand 0.7.3",
- "starcoin-logger",
- "stest",
- "thiserror",
-]
-
-[[package]]
 name = "futures"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7992,6 +7974,7 @@ dependencies = [
  "starcoin-types",
  "starcoin-vm-types",
  "stest",
+ "stream-task",
  "test-helper",
  "thiserror",
  "tokio 0.2.22",
@@ -8333,6 +8316,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09f8ed9974042b8c3672ff3030a69fcc03b74c47c3d1ecb7755e8a3626011e88"
 dependencies = [
  "generic-array 0.14.4",
+]
+
+[[package]]
+name = "stream-task"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "async-std",
+ "futures 0.3.5",
+ "futures-retry",
+ "futures-timer",
+ "log 0.4.11",
+ "pin-project 0.4.27",
+ "pin-utils",
+ "rand 0.7.3",
+ "starcoin-logger",
+ "stest",
+ "thiserror",
 ]
 
 [[package]]

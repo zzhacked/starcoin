@@ -104,14 +104,14 @@ where
         init_state: S,
         buffer_size: usize,
         max_retry_times: u64,
-        delay_milliseconds: u64,
+        delay_milliseconds_on_error: u64,
         collector: C,
     ) -> Self {
         Self {
             init_state,
             buffer_size,
             max_retry_times,
-            delay_milliseconds,
+            delay_milliseconds: delay_milliseconds_on_error,
             collector,
         }
     }

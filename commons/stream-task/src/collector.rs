@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 pub trait TaskResultCollector<Item>: std::marker::Send + Unpin {
-    type Output;
+    type Output: std::marker::Send;
 
     fn collect(self: Pin<&mut Self>, item: Item) -> Result<()>;
     fn finish(self) -> Result<Self::Output>;

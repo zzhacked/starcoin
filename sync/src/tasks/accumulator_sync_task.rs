@@ -176,7 +176,7 @@ mod tests {
             BlockAccumulatorSyncState::new(info0.num_leaves, info1.clone(), fetcher, 7);
         let collector = AccumulatorCollector::new(Arc::new(store2), info0, info1.clone());
 
-        let (sync_task, _handle) = TaskGenerator::new(task_state, 5, 3, 1, collector).generate();
+        let sync_task = TaskGenerator::new(task_state, 5, 3, 1, collector).generate();
 
         let info2 = sync_task.await?.get_info();
         assert_eq!(info1, info2);

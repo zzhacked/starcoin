@@ -138,7 +138,7 @@ mod tests {
         let total_blocks = 100;
         let (fetcher, accumulator) = build_block_fetcher(total_blocks);
         let block_sync_state = BlockSyncTaskState::new(accumulator, 0, fetcher, 3);
-        let (sync_task, _handle) = TaskGenerator::new(block_sync_state, 5, 3, 1, vec![]).generate();
+        let sync_task = TaskGenerator::new(block_sync_state, 5, 3, 1, vec![]).generate();
         let result = sync_task.await?;
         let last_block_number = result
             .iter()

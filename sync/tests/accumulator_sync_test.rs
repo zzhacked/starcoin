@@ -68,7 +68,7 @@ pub fn test_accumulator_sync() {
         BlockAccumulatorSyncState::new(current_info.num_leaves, target_info.clone(), client, 3);
     let collector = AccumulatorCollector::new(store, current_info, target_info.clone());
 
-    let (sync_task, _handle) = TaskGenerator::new(task_state, 5, 3, 1, collector).generate();
+    let sync_task = TaskGenerator::new(task_state, 5, 3, 1, collector).generate();
 
     let accumulator_info = block_on(async { sync_task.await }).unwrap().get_info();
     assert_eq!(accumulator_info, target_info);

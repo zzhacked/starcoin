@@ -7,7 +7,7 @@ use anyhow::Result;
 use futures::{
     future::{abortable, AbortHandle, BoxFuture},
     stream::{self},
-    FutureExt, SinkExt, StreamExt,
+    Future, FutureExt, SinkExt, StreamExt, TryFutureExt,
 };
 use std::fmt::Debug;
 use thiserror::Error;
@@ -16,6 +16,8 @@ mod collector;
 mod task_stream;
 
 pub use collector::{CounterCollector, TaskResultCollector};
+use futures::task::{Context, Poll};
+use pin_utils::core_reexport::pin::Pin;
 
 #[derive(Error, Debug)]
 pub enum TaskError {
@@ -83,6 +85,72 @@ impl TaskHandle {
     }
 }
 
+pub struct TaskFuture<Output> {
+    fut: BoxFuture<'static, Result<Output, TaskError>>,
+}
+
+impl<Output> TaskFuture<Output>
+where
+    Output: Send + 'static,
+{
+    pub fn new(fut: BoxFuture<'static, Result<Output, TaskError>>) -> Self {
+        Self { fut }
+    }
+
+    pub fn with_handle(self) -> (BoxFuture<'static, Result<Output, TaskError>>, TaskHandle) {
+        let (abortable_fut, handle) = abortable(self.fut);
+        (
+            abortable_fut
+                .map(|result| match result {
+                    Ok(result) => result,
+                    Err(_aborted) => Err(TaskError::Canceled),
+                })
+                .boxed(),
+            TaskHandle::new(handle),
+        )
+    }
+
+    pub fn and_then<M, S, C>(
+        self,
+        init_state_map: M,
+        buffer_size: usize,
+        max_retry_times: u64,
+        delay_milliseconds_on_error: u64,
+        collector: C,
+    ) -> TaskFuture<C::Output>
+    where
+        M: FnOnce(Output) -> Result<S> + Send + 'static,
+        S: TaskState + 'static,
+        C: TaskResultCollector<S::Item> + 'static,
+    {
+        let then_fut = self
+            .fut
+            .and_then(
+                |output| async move { init_state_map(output).map_err(TaskError::CollectorError) },
+            )
+            .and_then(move |init_state| {
+                TaskGenerator::new(
+                    init_state,
+                    buffer_size,
+                    max_retry_times,
+                    delay_milliseconds_on_error,
+                    collector,
+                )
+                .generate()
+            })
+            .boxed();
+        TaskFuture::new(then_fut)
+    }
+}
+
+impl<Output> Future for TaskFuture<Output> {
+    type Output = Result<Output, TaskError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.fut.as_mut()).poll(cx)
+    }
+}
+
 pub struct TaskGenerator<S, C>
 where
     S: TaskState,
@@ -116,7 +184,7 @@ where
         }
     }
 
-    pub fn generate(self) -> (BoxFuture<'static, Result<C::Output, TaskError>>, TaskHandle) {
+    pub fn generate(self) -> TaskFuture<C::Output> {
         let fut = async move {
             let stream = FutureTaskStream::new(
                 self.init_state,
@@ -138,16 +206,7 @@ where
             let collector = sink.into_inner();
             collector.finish().map_err(TaskError::CollectorError)
         };
-        let (abortable_fut, handle) = abortable(fut);
-        (
-            abortable_fut
-                .map(|result| match result {
-                    Ok(result) => result,
-                    Err(_aborted) => Err(TaskError::Canceled),
-                })
-                .boxed(),
-            TaskHandle::new(handle),
-        )
+        TaskFuture::new(fut.boxed())
     }
 }
 
@@ -295,7 +354,6 @@ mod tests {
         let mock_state = MockTaskState::new(config);
         let result = TaskGenerator::new(mock_state.clone(), 10, 0, 0, CounterCollector::new())
             .generate()
-            .0
             .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), max);
@@ -309,7 +367,6 @@ mod tests {
             let mock_state = MockTaskState::new(config);
             let result = TaskGenerator::new(mock_state.clone(), 10, 0, 0, CounterCollector::new())
                 .generate()
-                .0
                 .await;
             assert!(result.is_ok(), "assert test batch {} fail.", batch);
             assert_eq!(result.unwrap(), max, "test batch {} fail.", batch);
@@ -323,7 +380,6 @@ mod tests {
         let mock_state = MockTaskState::new(config);
         let result = TaskGenerator::new(mock_state, 10, 0, 0, vec![])
             .generate()
-            .0
             .await;
         //println!("{:?}", result);
         assert!(result.is_ok());
@@ -337,7 +393,7 @@ mod tests {
         let config = MockTestConfig::new_with_delay(max, delay_time);
         let mock_state = MockTaskState::new(config);
         let counter = Arc::new(AtomicU64::new(0));
-        let (fut, cancel_handle) = TaskGenerator::new(
+        let fut = TaskGenerator::new(
             mock_state.clone(),
             5,
             0,
@@ -345,9 +401,10 @@ mod tests {
             CounterCollector::new_with_counter(counter.clone()),
         )
         .generate();
+        let (fut, task_handle) = fut.with_handle();
         let join_handle = async_std::task::spawn(fut);
         Delay::new(Duration::from_millis(delay_time * 5)).await;
-        cancel_handle.cancel();
+        task_handle.cancel();
         let result = join_handle.await;
         assert!(result.is_err());
         let task_err = result.err().unwrap();
@@ -363,7 +420,7 @@ mod tests {
         let max_retry_times = 5;
         let config = MockTestConfig::new_with_error(max, max_retry_times - 1);
         let mock_state = MockTaskState::new(config);
-        let (fut, _cancel_handle) = TaskGenerator::new(
+        let fut = TaskGenerator::new(
             mock_state.clone(),
             10,
             max_retry_times,
@@ -383,7 +440,7 @@ mod tests {
 
         let config = MockTestConfig::new_with_error(max, max_retry_times);
         let mock_state = MockTaskState::new(config);
-        let (fut, _cancel_handle) = TaskGenerator::new(
+        let fut = TaskGenerator::new(
             mock_state.clone(),
             10,
             max_retry_times,
@@ -408,7 +465,6 @@ mod tests {
             Err(format_err!("collect error for: {:?}", item))
         })
         .generate()
-        .0
         .await;
         assert!(result.is_err());
         let task_err = result.err().unwrap();
@@ -424,7 +480,7 @@ mod tests {
         let config = MockTestConfig::new_with_break(max, max_retry_times - 1, break_at);
         let mock_state = MockTaskState::new(config);
 
-        let (fut, _handle) = TaskGenerator::new(
+        let fut = TaskGenerator::new(
             mock_state.clone(),
             10,
             max_retry_times,

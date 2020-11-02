@@ -34,6 +34,10 @@ pub trait BlockFetcher: Send + Sync {
 
 mod accumulator_sync_task;
 mod block_sync_task;
+mod find_ancestor_task;
+#[cfg(test)]
+pub(crate) mod mock;
 
 pub use accumulator_sync_task::{AccumulatorCollector, BlockAccumulatorSyncTask};
 pub use block_sync_task::BlockSyncTask;
+pub use find_ancestor_task::{AncestorCollector, FindAncestorTask};

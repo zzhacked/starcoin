@@ -12,7 +12,7 @@ use starcoin_crypto::HashValue;
 use starcoin_types::block::BlockNumber;
 use std::pin::Pin;
 use std::sync::Arc;
-use stream_task::{TaskResultCollector, TaskState};
+use stream_task::{CollectorState, TaskResultCollector, TaskState};
 
 #[derive(Clone)]
 pub struct BlockAccumulatorSyncTask {
@@ -102,9 +102,10 @@ impl AccumulatorCollector {
 impl TaskResultCollector<HashValue> for AccumulatorCollector {
     type Output = MerkleAccumulator;
 
-    fn collect(self: Pin<&mut Self>, item: HashValue) -> Result<()> {
+    fn collect(self: Pin<&mut Self>, item: HashValue) -> Result<CollectorState> {
         self.accumulator.append(&[item])?;
-        self.accumulator.flush()
+        self.accumulator.flush()?;
+        Ok(CollectorState::Need)
     }
 
     fn finish(self) -> Result<Self::Output> {
@@ -122,40 +123,10 @@ impl TaskResultCollector<HashValue> for AccumulatorCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::FutureExt;
-    use futures_timer::Delay;
+    use crate::tasks::mock::MockBlockIdFetcher;
     use starcoin_accumulator::tree_store::mock::MockAccumulatorStore;
     use starcoin_accumulator::MerkleAccumulator;
-    use std::time::Duration;
     use stream_task::{Generator, TaskEventCounterHandle, TaskGenerator};
-
-    struct MockBlockIdFetcher {
-        accumulator: MerkleAccumulator,
-    }
-
-    impl MockBlockIdFetcher {
-        async fn fetch_block_ids_async(
-            &self,
-            start_number: u64,
-            reverse: bool,
-            max_size: usize,
-        ) -> Result<Vec<HashValue>> {
-            Delay::new(Duration::from_millis(100)).await;
-            self.accumulator.get_leaves(start_number, reverse, max_size)
-        }
-    }
-
-    impl BlockIdFetcher for MockBlockIdFetcher {
-        fn fetch_block_ids(
-            &self,
-            start_number: u64,
-            reverse: bool,
-            max_size: usize,
-        ) -> BoxFuture<Result<Vec<HashValue>>> {
-            self.fetch_block_ids_async(start_number, reverse, max_size)
-                .boxed()
-        }
-    }
 
     #[stest::test]
     async fn test_accumulator_sync_by_stream_task() -> Result<()> {
@@ -173,7 +144,7 @@ mod tests {
         accumulator.flush().unwrap();
         let info1 = accumulator.get_info();
         assert_eq!(info1.num_leaves, 200);
-        let fetcher = MockBlockIdFetcher { accumulator };
+        let fetcher = MockBlockIdFetcher::new(Arc::new(accumulator));
         let store2 = MockAccumulatorStore::copy_from(store.as_ref());
 
         let task_state = BlockAccumulatorSyncTask::new(info0.num_leaves, info1.clone(), fetcher, 7);

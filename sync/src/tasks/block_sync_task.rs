@@ -11,14 +11,14 @@ use std::sync::Arc;
 use stream_task::TaskState;
 
 #[derive(Clone)]
-pub struct BlockSyncTaskState {
+pub struct BlockSyncTask {
     accumulator: Arc<MerkleAccumulator>,
     start_number: BlockNumber,
     fetcher: Arc<dyn BlockFetcher>,
     batch_size: u64,
 }
 
-impl BlockSyncTaskState {
+impl BlockSyncTask {
     pub fn new<F>(
         accumulator: MerkleAccumulator,
         start_number: BlockNumber,
@@ -37,7 +37,7 @@ impl BlockSyncTaskState {
     }
 }
 
-impl TaskState for BlockSyncTaskState {
+impl TaskState for BlockSyncTask {
     type Item = Block;
 
     fn new_sub_task(self) -> BoxFuture<'static, Result<Vec<Self::Item>>> {
@@ -66,6 +66,10 @@ impl TaskState for BlockSyncTaskState {
             })
         }
     }
+
+    fn total_items(&self) -> Option<u64> {
+        Some(self.accumulator.num_leaves() - self.start_number)
+    }
 }
 
 #[cfg(test)]
@@ -74,14 +78,15 @@ mod tests {
     use anyhow::format_err;
     use futures::FutureExt;
     use futures_timer::Delay;
-    use pin_utils::core_reexport::time::Duration;
+    use logger::prelude::*;
     use starcoin_accumulator::tree_store::mock::MockAccumulatorStore;
     use starcoin_accumulator::MerkleAccumulator;
     use starcoin_crypto::HashValue;
     use starcoin_types::block::BlockHeader;
     use std::collections::HashMap;
     use std::sync::Mutex;
-    use stream_task::TaskGenerator;
+    use std::time::Duration;
+    use stream_task::{Generator, TaskEventCounterHandle, TaskGenerator};
 
     #[derive(Default)]
     struct MockBlockFetcher {
@@ -137,8 +142,10 @@ mod tests {
     async fn test_block_sync() -> Result<()> {
         let total_blocks = 100;
         let (fetcher, accumulator) = build_block_fetcher(total_blocks);
-        let block_sync_state = BlockSyncTaskState::new(accumulator, 0, fetcher, 3);
-        let sync_task = TaskGenerator::new(block_sync_state, 5, 3, 1, vec![]).generate();
+        let block_sync_state = BlockSyncTask::new(accumulator, 0, fetcher, 3);
+        let event_handle = Arc::new(TaskEventCounterHandle::new());
+        let sync_task =
+            TaskGenerator::new(block_sync_state, 5, 3, 1, vec![], event_handle.clone()).generate();
         let result = sync_task.await?;
         let last_block_number = result
             .iter()
@@ -154,6 +161,9 @@ mod tests {
             });
 
         assert_eq!(last_block_number as u64, total_blocks - 1);
+
+        let report = event_handle.get_reports().pop().unwrap();
+        debug!("report: {}", report);
         Ok(())
     }
 }

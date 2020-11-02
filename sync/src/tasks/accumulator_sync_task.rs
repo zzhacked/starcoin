@@ -15,14 +15,14 @@ use std::sync::Arc;
 use stream_task::{TaskResultCollector, TaskState};
 
 #[derive(Clone)]
-pub struct BlockAccumulatorSyncState {
+pub struct BlockAccumulatorSyncTask {
     start_number: BlockNumber,
     target: AccumulatorInfo,
     fetcher: Arc<dyn BlockIdFetcher>,
     batch_size: usize,
 }
 
-impl BlockAccumulatorSyncState {
+impl BlockAccumulatorSyncTask {
     pub fn new<F>(
         start_number: BlockNumber,
         target: AccumulatorInfo,
@@ -41,7 +41,7 @@ impl BlockAccumulatorSyncState {
     }
 }
 
-impl TaskState for BlockAccumulatorSyncState {
+impl TaskState for BlockAccumulatorSyncTask {
     type Item = HashValue;
 
     fn new_sub_task(self) -> BoxFuture<'static, Result<Vec<Self::Item>>> {
@@ -73,6 +73,10 @@ impl TaskState for BlockAccumulatorSyncState {
                 batch_size: self.batch_size,
             })
         }
+    }
+
+    fn total_items(&self) -> Option<u64> {
+        Some(self.target.num_leaves - self.start_number)
     }
 }
 
@@ -120,10 +124,10 @@ mod tests {
     use super::*;
     use futures::FutureExt;
     use futures_timer::Delay;
-    use pin_utils::core_reexport::time::Duration;
     use starcoin_accumulator::tree_store::mock::MockAccumulatorStore;
     use starcoin_accumulator::MerkleAccumulator;
-    use stream_task::TaskGenerator;
+    use std::time::Duration;
+    use stream_task::{Generator, TaskEventCounterHandle, TaskGenerator};
 
     struct MockBlockIdFetcher {
         accumulator: MerkleAccumulator,
@@ -172,14 +176,15 @@ mod tests {
         let fetcher = MockBlockIdFetcher { accumulator };
         let store2 = MockAccumulatorStore::copy_from(store.as_ref());
 
-        let task_state =
-            BlockAccumulatorSyncState::new(info0.num_leaves, info1.clone(), fetcher, 7);
+        let task_state = BlockAccumulatorSyncTask::new(info0.num_leaves, info1.clone(), fetcher, 7);
         let collector = AccumulatorCollector::new(Arc::new(store2), info0, info1.clone());
-
-        let sync_task = TaskGenerator::new(task_state, 5, 3, 1, collector).generate();
-
+        let event_handle = Arc::new(TaskEventCounterHandle::new());
+        let sync_task =
+            TaskGenerator::new(task_state, 5, 3, 1, collector, event_handle.clone()).generate();
         let info2 = sync_task.await?.get_info();
         assert_eq!(info1, info2);
+        let report = event_handle.get_reports().pop().unwrap();
+        debug!("report: {}", report);
         Ok(())
     }
 }

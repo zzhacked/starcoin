@@ -130,26 +130,36 @@ impl Accumulator for MerkleAccumulator {
     ) -> Result<Vec<HashValue>> {
         let mut tree = self.tree.lock();
         let max_size_u64 = max_size as u64;
-        let seq = if reverse {
+        if reverse {
             let end = start_index + 1;
             let begin = if end > max_size_u64 {
                 end - max_size_u64
             } else {
                 0
             };
-            begin..end
+            (begin..end)
+                .rev()
+                .map(|idx| {
+                    tree.get_node_hash(NodeIndex::from_leaf_index(idx))?
+                        .ok_or_else(|| {
+                            format_err!("Can not find accumulator leaf by index: {}", idx)
+                        })
+                })
+                .collect()
         } else {
             let mut end = start_index + max_size_u64;
             if end > tree.num_leaves {
                 end = tree.num_leaves;
             }
-            start_index..end
-        };
-        seq.map(|idx| {
-            tree.get_node_hash(NodeIndex::from_leaf_index(idx))?
-                .ok_or_else(|| format_err!("Can not find accumulator leaf by index: {}", idx))
-        })
-        .collect()
+            (start_index..end)
+                .map(|idx| {
+                    tree.get_node_hash(NodeIndex::from_leaf_index(idx))?
+                        .ok_or_else(|| {
+                            format_err!("Can not find accumulator leaf by index: {}", idx)
+                        })
+                })
+                .collect()
+        }
     }
 
     fn get_node_by_position(&self, position: u64) -> Result<Option<HashValue>> {

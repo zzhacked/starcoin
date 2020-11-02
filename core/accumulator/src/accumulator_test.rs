@@ -287,7 +287,10 @@ fn test_get_leaves_batch() {
 
     let leaves1 = accumulator.get_leaves(5, true, 100).unwrap();
     assert_eq!(leaves1.len(), 6);
-    assert_eq!(&leaves[0..6], leaves1.as_slice());
+    assert_eq!(
+        (0..6usize).rev().map(|i| leaves[i]).collect::<Vec<_>>(),
+        leaves1
+    );
 
     let leaves2 = accumulator.get_leaves(5, false, 90).unwrap();
     assert_eq!(leaves2.len(), 90);

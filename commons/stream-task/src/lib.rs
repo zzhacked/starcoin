@@ -4,20 +4,86 @@
 use crate::collector::FutureTaskSink;
 use crate::task_stream::FutureTaskStream;
 use anyhow::Result;
+use futures::task::{Context, Poll};
 use futures::{
     future::{abortable, AbortHandle, BoxFuture},
     stream::{self},
     Future, FutureExt, SinkExt, StreamExt, TryFutureExt,
 };
+use std::any::type_name;
 use std::fmt::Debug;
+use std::marker::PhantomData;
+use std::pin::Pin;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use thiserror::Error;
 
 mod collector;
 mod task_stream;
 
 pub use collector::{CounterCollector, TaskResultCollector};
-use futures::task::{Context, Poll};
-use pin_utils::core_reexport::pin::Pin;
+
+pub trait TaskEventHandle: Send + Sync {
+    fn on_start(&self, name: String, total_items: Option<u64>);
+
+    fn on_error(&self);
+
+    fn on_ok(&self);
+
+    fn on_retry(&self);
+
+    fn on_item(&self);
+
+    fn on_finish(&self);
+}
+
+#[derive(Clone)]
+pub struct TaskEventCounter {
+    name: Option<String>,
+    total_items: Option<u64>,
+    error_counter: Arc<AtomicU64>,
+    ok_counter: Arc<AtomicU64>,
+    retry_counter: Arc<AtomicU64>,
+    item_counter: Arc<AtomicU64>,
+}
+
+impl TaskEventCounter {
+    pub(crate) fn new() -> Self {
+        Self {
+            name: None,
+            total_items: None,
+            error_counter: Arc::new(AtomicU64::new(0)),
+            ok_counter: Arc::new(AtomicU64::new(0)),
+            retry_counter: Arc::new(AtomicU64::new(0)),
+            item_counter: Arc::new(AtomicU64::new(0)),
+        }
+    }
+}
+
+impl TaskEventHandle for TaskEventCounter {
+    fn on_start(&self, name: String, total_items: Option<u64>) {}
+
+    fn on_error(&self) {
+        self.error_counter.fetch_add(1, Ordering::Release);
+    }
+
+    fn on_ok(&self) {
+        self.ok_counter.fetch_add(1, Ordering::Release);
+    }
+
+    fn on_retry(&self) {
+        self.retry_counter.fetch_add(1, Ordering::Release);
+    }
+
+    fn on_item(&self) {
+        self.item_counter.fetch_add(1, Ordering::Release);
+    }
+
+    fn on_finish(&self) {
+        unimplemented!()
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum TaskError {
@@ -67,21 +133,32 @@ impl TaskError {
 pub trait TaskState: Sized + Clone + std::marker::Unpin + std::marker::Send {
     type Item: Debug + std::marker::Send;
 
+    fn name() -> &'static str {
+        type_name::<Self>()
+    }
     fn new_sub_task(self) -> BoxFuture<'static, Result<Vec<Self::Item>>>;
     fn next(&self) -> Option<Self>;
+    fn total_items(&self) -> Option<u64> {
+        None
+    }
 }
 
 pub struct TaskHandle {
     inner: AbortHandle,
+    is_done: Arc<AtomicBool>,
 }
 
 impl TaskHandle {
-    pub(crate) fn new(inner: AbortHandle) -> Self {
-        Self { inner }
+    pub(crate) fn new(inner: AbortHandle, is_done: Arc<AtomicBool>) -> Self {
+        Self { inner, is_done }
     }
 
     pub fn cancel(&self) {
         self.inner.abort()
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.is_done.load(Ordering::SeqCst)
     }
 }
 
@@ -99,47 +176,20 @@ where
 
     pub fn with_handle(self) -> (BoxFuture<'static, Result<Output, TaskError>>, TaskHandle) {
         let (abortable_fut, handle) = abortable(self.fut);
+        let is_done = Arc::new(AtomicBool::new(false));
+        let fut_is_done = is_done.clone();
         (
             abortable_fut
-                .map(|result| match result {
-                    Ok(result) => result,
-                    Err(_aborted) => Err(TaskError::Canceled),
+                .map(move |result| {
+                    fut_is_done.store(true, Ordering::SeqCst);
+                    match result {
+                        Ok(result) => result,
+                        Err(_aborted) => Err(TaskError::Canceled),
+                    }
                 })
                 .boxed(),
-            TaskHandle::new(handle),
+            TaskHandle::new(handle, is_done),
         )
-    }
-
-    pub fn and_then<M, S, C>(
-        self,
-        init_state_map: M,
-        buffer_size: usize,
-        max_retry_times: u64,
-        delay_milliseconds_on_error: u64,
-        collector: C,
-    ) -> TaskFuture<C::Output>
-    where
-        M: FnOnce(Output) -> Result<S> + Send + 'static,
-        S: TaskState + 'static,
-        C: TaskResultCollector<S::Item> + 'static,
-    {
-        let then_fut = self
-            .fut
-            .and_then(
-                |output| async move { init_state_map(output).map_err(TaskError::CollectorError) },
-            )
-            .and_then(move |init_state| {
-                TaskGenerator::new(
-                    init_state,
-                    buffer_size,
-                    max_retry_times,
-                    delay_milliseconds_on_error,
-                    collector,
-                )
-                .generate()
-            })
-            .boxed();
-        TaskFuture::new(then_fut)
     }
 }
 
@@ -149,6 +199,12 @@ impl<Output> Future for TaskFuture<Output> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Pin::new(&mut self.fut.as_mut()).poll(cx)
     }
+}
+
+pub trait Generator: Send {
+    type State: TaskState;
+    type Output: std::marker::Send;
+    fn generate(self) -> TaskFuture<Self::Output>;
 }
 
 pub struct TaskGenerator<S, C>
@@ -161,6 +217,7 @@ where
     max_retry_times: u64,
     delay_milliseconds: u64,
     collector: C,
+    event_handle: Arc<dyn TaskEventHandle>,
 }
 
 impl<S, C> TaskGenerator<S, C>
@@ -174,6 +231,7 @@ where
         max_retry_times: u64,
         delay_milliseconds_on_error: u64,
         collector: C,
+        event_handle: Arc<dyn TaskEventHandle>,
     ) -> Self {
         Self {
             init_state,
@@ -181,6 +239,7 @@ where
             max_retry_times,
             delay_milliseconds: delay_milliseconds_on_error,
             collector,
+            event_handle,
         }
     }
 
@@ -190,6 +249,7 @@ where
                 self.init_state,
                 self.max_retry_times,
                 self.delay_milliseconds,
+                self.event_handle.clone(),
             );
             let mut buffered_stream = stream
                 .buffered(self.buffer_size)
@@ -201,12 +261,67 @@ where
                     stream::iter(items)
                 })
                 .flatten();
-            let mut sink = FutureTaskSink::new(self.collector);
+            let mut sink = FutureTaskSink::new(self.collector, self.event_handle);
             sink.send_all(&mut buffered_stream).await?;
             let collector = sink.into_inner();
             collector.finish().map_err(TaskError::CollectorError)
-        };
-        TaskFuture::new(fut.boxed())
+        }
+        .boxed();
+
+        TaskFuture::new(fut)
+    }
+}
+
+pub struct AndThenGenerator<G, C, S, M> {
+    g1: G,
+    buffer_size: usize,
+    max_retry_times: u64,
+    delay_milliseconds: u64,
+    collector: C,
+    init_state_map: M,
+    event_handle: Arc<dyn TaskEventHandle>,
+    init_state: PhantomData<S>,
+}
+
+impl<G, C, S, M> Generator for AndThenGenerator<G, C, S, M>
+where
+    G: Generator + 'static,
+    S: TaskState + 'static,
+    C: TaskResultCollector<S::Item> + 'static,
+    M: FnOnce(G::Output) -> Result<S> + Send + 'static,
+{
+    type State = S;
+    type Output = C::Output;
+
+    fn generate(self) -> TaskFuture<Self::Output> {
+        let Self {
+            g1,
+            buffer_size,
+            max_retry_times,
+            delay_milliseconds,
+            collector,
+            init_state_map,
+            event_handle,
+            init_state: _,
+        } = self;
+        let first_task = g1.generate();
+        let then_fut = first_task
+            .and_then(|output| async move {
+                (init_state_map)(output).map_err(TaskError::CollectorError)
+            })
+            .and_then(move |init_state| {
+                TaskGenerator::new(
+                    init_state,
+                    buffer_size,
+                    max_retry_times,
+                    delay_milliseconds,
+                    collector,
+                    event_handle,
+                )
+                .generate()
+            })
+            .boxed();
+        TaskFuture::new(then_fut)
     }
 }
 
@@ -404,9 +519,13 @@ mod tests {
         let (fut, task_handle) = fut.with_handle();
         let join_handle = async_std::task::spawn(fut);
         Delay::new(Duration::from_millis(delay_time * 5)).await;
+        assert_eq!(task_handle.is_done(), false);
         task_handle.cancel();
         let result = join_handle.await;
         assert!(result.is_err());
+
+        assert_eq!(task_handle.is_done(), true);
+
         let task_err = result.err().unwrap();
         assert!(task_err.is_canceled());
         let processed_messages = counter.load(Ordering::SeqCst);

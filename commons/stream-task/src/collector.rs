@@ -1,7 +1,7 @@
 // Copyright (c) The Starcoin Core Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::TaskError;
+use crate::{TaskError, TaskEventCounter, TaskEventHandle};
 use anyhow::{Error, Result};
 use futures::task::{Context, Poll};
 use futures::Sink;
@@ -84,14 +84,18 @@ where
 pub struct FutureTaskSink<C> {
     #[pin]
     collector: C,
+    event_handle: Arc<dyn TaskEventHandle>,
 }
 
 impl<C> FutureTaskSink<C> {
-    pub fn new<Item>(collector: C) -> Self
+    pub fn new<Item>(collector: C, event_handle: Arc<dyn TaskEventHandle>) -> Self
     where
         C: TaskResultCollector<Item>,
     {
-        Self { collector }
+        Self {
+            collector,
+            event_handle,
+        }
     }
 
     pub fn into_inner(self) -> C {
@@ -111,6 +115,7 @@ where
 
     fn start_send(self: Pin<&mut Self>, item: Item) -> Result<(), Self::Error> {
         let this = self.project();
+        this.event_handle.on_item();
         this.collector
             .collect(item)
             .map_err(TaskError::CollectorError)

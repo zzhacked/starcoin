@@ -1,7 +1,7 @@
 // Copyright (c) The Starcoin Core Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{TaskError, TaskState};
+use crate::{TaskError, TaskEventCounter, TaskEventHandle, TaskState};
 use anyhow::{Error, Result};
 use futures::{
     future::BoxFuture,
@@ -12,17 +12,24 @@ use futures_retry::{ErrorHandler, FutureRetry, RetryPolicy};
 use log::debug;
 use pin_project::pin_project;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone)]
 pub struct TaskErrorHandle {
+    event_handle: Arc<dyn TaskEventHandle>,
     max_retry_times: u64,
     delay_milliseconds: u64,
 }
 
 impl TaskErrorHandle {
-    pub fn new(max_retry_times: u64, delay_milliseconds: u64) -> Self {
+    pub fn new(
+        event_handle: Arc<dyn TaskEventHandle>,
+        max_retry_times: u64,
+        delay_milliseconds: u64,
+    ) -> Self {
         Self {
+            event_handle,
             max_retry_times,
             delay_milliseconds,
         }
@@ -33,6 +40,11 @@ impl ErrorHandler<anyhow::Error> for TaskErrorHandle {
     type OutError = TaskError;
 
     fn handle(&mut self, attempt: usize, error: Error) -> RetryPolicy<Self::OutError> {
+        if attempt > 1 {
+            self.event_handle.on_retry();
+        } else {
+            self.event_handle.on_error();
+        }
         match error.downcast::<TaskError>() {
             Ok(task_err) => match task_err {
                 TaskError::BreakError(e) => RetryPolicy::ForwardError(TaskError::BreakError(e)),
@@ -58,6 +70,10 @@ impl ErrorHandler<anyhow::Error> for TaskErrorHandle {
             }
         }
     }
+
+    fn ok(&mut self, _attempt: usize) {
+        self.event_handle.on_ok()
+    }
 }
 
 #[pin_project]
@@ -65,20 +81,27 @@ pub struct FutureTaskStream<S>
 where
     S: TaskState,
 {
+    state: Option<S>,
     max_retry_times: u64,
     delay_milliseconds: u64,
-    state: Option<S>,
+    event_handle: Arc<dyn TaskEventHandle>,
 }
 
 impl<S> FutureTaskStream<S>
 where
     S: TaskState,
 {
-    pub fn new(state: S, max_retry_times: u64, delay_milliseconds: u64) -> Self {
+    pub fn new(
+        state: S,
+        max_retry_times: u64,
+        delay_milliseconds: u64,
+        event_handle: Arc<dyn TaskEventHandle>,
+    ) -> Self {
         Self {
+            state: Some(state),
             max_retry_times,
             delay_milliseconds,
-            state: Some(state),
+            event_handle,
         }
     }
 }
@@ -93,8 +116,11 @@ where
         let this = self.project();
         match this.state {
             Some(state) => {
-                let error_action =
-                    TaskErrorHandle::new(*this.max_retry_times, *this.delay_milliseconds);
+                let error_action = TaskErrorHandle::new(
+                    this.event_handle.clone(),
+                    *this.max_retry_times,
+                    *this.delay_milliseconds,
+                );
                 let state_to_factory = state.clone();
 
                 let fut = async move {

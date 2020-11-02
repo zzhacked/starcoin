@@ -1,7 +1,7 @@
 // Copyright (c) The Starcoin Core Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{TaskError, TaskEventCounter, TaskEventHandle};
+use crate::{TaskError, TaskEventHandle};
 use anyhow::{Error, Result};
 use futures::task::{Context, Poll};
 use futures::Sink;
@@ -81,7 +81,7 @@ where
 }
 
 #[pin_project]
-pub struct FutureTaskSink<C> {
+pub(crate) struct FutureTaskSink<C> {
     #[pin]
     collector: C,
     event_handle: Arc<dyn TaskEventHandle>,
@@ -98,7 +98,7 @@ impl<C> FutureTaskSink<C> {
         }
     }
 
-    pub fn into_inner(self) -> C {
+    pub fn into_collector(self) -> C {
         self.collector
     }
 }

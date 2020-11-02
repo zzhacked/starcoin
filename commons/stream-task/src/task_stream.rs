@@ -1,7 +1,7 @@
 // Copyright (c) The Starcoin Core Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{TaskError, TaskEventCounter, TaskEventHandle, TaskState};
+use crate::{TaskError, TaskEventHandle, TaskState};
 use anyhow::{Error, Result};
 use futures::{
     future::BoxFuture,
@@ -116,6 +116,7 @@ where
         let this = self.project();
         match this.state {
             Some(state) => {
+                this.event_handle.on_sub_task();
                 let error_action = TaskErrorHandle::new(
                     this.event_handle.clone(),
                     *this.max_retry_times,

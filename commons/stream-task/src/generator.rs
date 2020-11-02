@@ -1,7 +1,7 @@
 // Copyright (c) The Starcoin Core Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::collector::FutureTaskSink;
+use crate::collector::{FutureTaskSink, SinkError};
 use crate::task_stream::FutureTaskStream;
 use crate::{TaskError, TaskEventHandle, TaskResultCollector, TaskState};
 use anyhow::Result;
@@ -9,7 +9,7 @@ use futures::task::{Context, Poll};
 use futures::{
     future::{abortable, AbortHandle, BoxFuture},
     stream::{self},
-    Future, FutureExt, SinkExt, StreamExt, TryFutureExt,
+    Future, FutureExt, SinkExt, StreamExt, TryFutureExt, TryStreamExt,
 };
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -172,9 +172,19 @@ where
                     };
                     stream::iter(items)
                 })
-                .flatten();
+                .flatten()
+                .map_err(SinkError::StreamTaskError);
             let mut sink = FutureTaskSink::new(self.collector, event_handle.clone());
-            sink.send_all(&mut buffered_stream).await?;
+            let sink_result = sink.send_all(&mut buffered_stream).await;
+            if let Err(sink_err) = sink_result {
+                match sink_err {
+                    SinkError::StreamTaskError(e) => return Err(e),
+                    SinkError::CollectorError(e) => return Err(TaskError::CollectorError(e)),
+                    SinkError::CollectorEnough => {
+                        //continue
+                    }
+                }
+            }
             let collector = sink.into_collector();
             event_handle.on_finish(task_name.to_string());
             collector.finish().map_err(TaskError::CollectorError)

@@ -6,15 +6,19 @@ use anyhow::{format_err, Result};
 use futures::future::BoxFuture;
 use futures::FutureExt;
 use futures_timer::Delay;
+use logger::prelude::*;
 use rand::Rng;
 use starcoin_accumulator::{Accumulator, MerkleAccumulator};
 use starcoin_chain_api::ChainReader;
-use starcoin_chain_mock::MockChain;
+use starcoin_chain_mock::{BlockChain, MockChain};
 use starcoin_crypto::HashValue;
 use starcoin_types::block::Block;
 use starcoin_vm_types::genesis_config::ChainNetwork;
+use starcoin_vm_types::on_chain_resource::GlobalTimeOnChain;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use stream_task::{CollectorState, TaskResultCollector};
 
 #[derive(Clone)]
 pub struct MockBlockIdFetcher {
@@ -55,7 +59,7 @@ impl BlockIdFetcher for MockBlockIdFetcher {
 }
 
 pub struct SyncNodeMocker {
-    pub chain: MockChain,
+    pub chain_mocker: MockChain,
     pub delay_milliseconds: u64,
     pub random_error_percent: u32,
 }
@@ -67,14 +71,18 @@ impl SyncNodeMocker {
         random_error_percent: u32,
     ) -> Result<Self> {
         Ok(Self {
-            chain: MockChain::new(net)?,
+            chain_mocker: MockChain::new(net)?,
             delay_milliseconds,
             random_error_percent,
         })
     }
 
+    pub fn chain(&self) -> &BlockChain {
+        self.chain_mocker.head()
+    }
+
     pub fn produce_block(&mut self, times: u64) -> Result<()> {
-        self.chain.produce_and_apply_times(times)
+        self.chain_mocker.produce_and_apply_times(times)
     }
 
     async fn delay(&self) {
@@ -100,10 +108,7 @@ impl BlockIdFetcher for SyncNodeMocker {
         reverse: bool,
         max_size: usize,
     ) -> BoxFuture<'_, Result<Vec<HashValue>>> {
-        let result = self
-            .chain
-            .head()
-            .get_block_ids(start_number, reverse, max_size);
+        let result = self.chain().get_block_ids(start_number, reverse, max_size);
         async move {
             self.delay().await;
             self.random_err()?;
@@ -118,8 +123,7 @@ impl BlockFetcher for SyncNodeMocker {
         let result: Result<Vec<Block>> = block_ids
             .into_iter()
             .map(|block_id| {
-                self.chain
-                    .head()
+                self.chain()
                     .get_block(block_id)?
                     .ok_or_else(|| format_err!("Can not find block by id: {}", block_id))
             })
@@ -130,5 +134,27 @@ impl BlockFetcher for SyncNodeMocker {
             result
         }
         .boxed()
+    }
+}
+
+impl TaskResultCollector<Block> for SyncNodeMocker {
+    type Output = Self;
+
+    fn collect(mut self: Pin<&mut Self>, item: Block) -> Result<CollectorState> {
+        debug!("Collect block: {}", item);
+        let timestamp = item.header().timestamp();
+        if self.chain().current_header().id() != item.header().parent_hash() {
+            self.chain_mocker = self.chain_mocker.fork(Some(item.header().parent_hash()))?;
+        }
+        self.chain_mocker.apply(item)?;
+        self.chain_mocker
+            .net()
+            .time_service()
+            .adjust(GlobalTimeOnChain::new(timestamp));
+        Ok(CollectorState::Need)
+    }
+
+    fn finish(self) -> Result<Self::Output> {
+        Ok(self)
     }
 }

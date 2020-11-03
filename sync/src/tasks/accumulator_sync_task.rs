@@ -82,7 +82,6 @@ impl TaskState for BlockAccumulatorSyncTask {
 
 pub struct AccumulatorCollector {
     accumulator: MerkleAccumulator,
-    start: AccumulatorInfo,
     target: AccumulatorInfo,
 }
 
@@ -92,17 +91,16 @@ impl AccumulatorCollector {
         start: AccumulatorInfo,
         target: AccumulatorInfo,
     ) -> Self {
-        let accumulator = MerkleAccumulator::new_with_info(start.clone(), store);
+        let accumulator = MerkleAccumulator::new_with_info(start, store);
         Self {
             accumulator,
-            start,
             target,
         }
     }
 }
 
 impl TaskResultCollector<HashValue> for AccumulatorCollector {
-    type Output = (AccumulatorInfo, MerkleAccumulator);
+    type Output = MerkleAccumulator;
 
     fn collect(self: Pin<&mut Self>, item: HashValue) -> Result<CollectorState> {
         self.accumulator.append(&[item])?;
@@ -122,7 +120,7 @@ impl TaskResultCollector<HashValue> for AccumulatorCollector {
             self.target,
             info
         );
-        Ok((self.start, self.accumulator))
+        Ok(self.accumulator)
     }
 }
 
@@ -158,7 +156,7 @@ mod tests {
         let event_handle = Arc::new(TaskEventCounterHandle::new());
         let sync_task =
             TaskGenerator::new(task_state, 5, 3, 1, collector, event_handle.clone()).generate();
-        let info2 = sync_task.await?.1.get_info();
+        let info2 = sync_task.await?.get_info();
         assert_eq!(info1, info2);
         let report = event_handle.get_reports().pop().unwrap();
         debug!("report: {}", report);

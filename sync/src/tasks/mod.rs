@@ -6,8 +6,14 @@ use anyhow::{format_err, Result};
 use chain::BlockChain;
 use futures::future::BoxFuture;
 use futures::FutureExt;
+use logger::prelude::*;
+use starcoin_accumulator::node::AccumulatorStoreType;
+use starcoin_accumulator::MerkleAccumulator;
 use starcoin_crypto::HashValue;
+use starcoin_storage::Store;
 use starcoin_types::block::{Block, BlockInfo, BlockNumber};
+use starcoin_vm_types::time::TimeService;
+use std::sync::Arc;
 use stream_task::{Generator, TaskEventCounterHandle, TaskFuture, TaskGenerator};
 
 pub trait BlockIdFetcher: Send + Sync {
@@ -84,13 +90,6 @@ mod tests;
 pub use accumulator_sync_task::{AccumulatorCollector, BlockAccumulatorSyncTask};
 pub use block_sync_task::{BlockCollector, BlockSyncTask};
 pub use find_ancestor_task::{AncestorCollector, FindAncestorTask};
-use logger::prelude::*;
-use network_api::PeerProvider;
-use starcoin_accumulator::node::AccumulatorStoreType;
-use starcoin_accumulator::MerkleAccumulator;
-use starcoin_storage::Store;
-use starcoin_vm_types::time::TimeService;
-use std::sync::Arc;
 
 pub fn full_sync_task<F>(
     current_block_id: HashValue,
@@ -100,7 +99,7 @@ pub fn full_sync_task<F>(
     fetcher: F,
 ) -> Result<TaskFuture<BlockChain>>
 where
-    F: BlockIdFetcher + BlockFetcher + BlockInfoFetcher,
+    F: BlockIdFetcher + BlockFetcher + 'static,
 {
     let fetcher = Arc::new(fetcher);
     let current_block_header = storage
@@ -133,7 +132,7 @@ where
             current_block_accumulator_info,
             storage.get_accumulator_store(AccumulatorStoreType::Block),
         ))),
-        event_handle.clone(),
+        event_handle,
     )
     .and_then(move |ancestor, event_handle| {
         debug!("find ancestor: {:?}", ancestor);
@@ -167,17 +166,18 @@ where
             BlockSyncTask::new(accumulator, current_block_number + 1, block_task_fetcher, 3);
         let collector = BlockCollector::new(BlockChain::new(
             time_service,
-            node2_head_block.id(),
+            current_block_id,
             chain_storage,
         )?);
         Ok(TaskGenerator::new(
             block_sync_task,
             2,
-            15,
-            1,
+            max_retry_times,
+            delay_milliseconds_on_error,
             collector,
             event_handle,
         ))
     })
     .generate();
+    Ok(sync_task)
 }

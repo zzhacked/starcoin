@@ -93,7 +93,7 @@ impl SyncNodeMocker {
     }
 }
 
-impl BlockIdFetcher for Arc<SyncNodeMocker> {
+impl BlockIdFetcher for SyncNodeMocker {
     fn fetch_block_ids(
         &self,
         start_number: u64,
@@ -113,7 +113,7 @@ impl BlockIdFetcher for Arc<SyncNodeMocker> {
     }
 }
 
-impl BlockFetcher for Arc<SyncNodeMocker> {
+impl BlockFetcher for SyncNodeMocker {
     fn fetch_block(&self, block_ids: Vec<HashValue>) -> BoxFuture<'_, Result<Vec<Block>>> {
         let result: Result<Vec<Block>> = block_ids
             .into_iter()

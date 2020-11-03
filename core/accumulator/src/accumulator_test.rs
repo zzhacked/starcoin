@@ -20,25 +20,18 @@ fn test_get_leaves() {
         0,
         Arc::new(mock_store),
     );
-    let (root_hash, index) = accumulator.append(leaves.as_slice()).unwrap();
+    let (root_hash, new_num_leaves) = accumulator.append(leaves.as_slice()).unwrap();
     dbg!(root_hash);
-    let mut i = index;
-    let len = leaves.len() as u64;
     let begin = SystemTime::now();
-    loop {
-        if i < len {
-            let _leaf = accumulator.get_leaf(i).unwrap().unwrap();
-        } else {
-            break;
-        }
-        i += 1;
-    }
+    (0..new_num_leaves).for_each(|idx| {
+        let _leaf = accumulator.get_leaf(idx).unwrap().unwrap();
+    });
     let use_time = SystemTime::now().duration_since(begin).unwrap();
     println!(
         "test accumulator get leaves, leaves count: {:?} use time: {:?} average time:{:?}",
-        len,
+        new_num_leaves,
         use_time,
-        use_time.as_nanos() / len as u128,
+        use_time.as_nanos() / new_num_leaves as u128,
     );
 }
 

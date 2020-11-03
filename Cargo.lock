@@ -7946,6 +7946,7 @@ dependencies = [
  "starcoin-block-relayer",
  "starcoin-canonical-serialization",
  "starcoin-chain",
+ "starcoin-chain-api",
  "starcoin-chain-mock",
  "starcoin-chain-service",
  "starcoin-config",

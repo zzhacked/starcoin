@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::verified_rpc_client::VerifiedRpcClient;
-use anyhow::Result;
+use anyhow::{format_err, Result};
 use chain::BlockChain;
 use futures::future::BoxFuture;
 use futures::FutureExt;
@@ -93,45 +93,56 @@ use starcoin_vm_types::time::TimeService;
 use std::sync::Arc;
 
 pub fn full_sync_task<F>(
-    current_block: HashValue,
+    current_block_id: HashValue,
     target: BlockInfo,
     time_service: Arc<dyn TimeService>,
     storage: Arc<dyn Store>,
     fetcher: F,
-) -> TaskFuture<BlockChain>
+) -> Result<TaskFuture<BlockChain>>
 where
     F: BlockIdFetcher + BlockFetcher + BlockInfoFetcher,
 {
     let fetcher = Arc::new(fetcher);
-
-    let current_block_number = start.block_accumulator_info.num_leaves - 1;
-
-    let current_block_id = start.block_id;
-    let find_ancestor_task = FindAncestorTask::new(current_block_number, 10, fetcher.clone());
+    let current_block_header = storage
+        .get_block_header_by_hash(current_block_id)?
+        .ok_or_else(|| format_err!("Can not find block header by id: {}", current_block_id))?;
+    let current_block_number = current_block_header.number;
+    let current_block_id = current_block_header.id();
+    let current_block_info = storage
+        .get_block_info(current_block_id)?
+        .ok_or_else(|| format_err!("Can not find block info by id: {}", current_block_id))?;
 
     let event_handle = Arc::new(TaskEventCounterHandle::new());
 
     let target_block_accumulator = target.block_accumulator_info.clone();
 
-    let start_block_accumulator_info = start.block_accumulator_info.clone();
+    let current_block_accumulator_info = current_block_info.block_accumulator_info.clone();
 
     let chain_storage = storage.clone();
     let accumulator_task_fetcher = fetcher.clone();
     let block_task_fetcher = fetcher.clone();
+
+    let max_retry_times = 15;
+    let delay_milliseconds_on_error = 100;
     let sync_task = TaskGenerator::new(
-        find_ancestor_task,
+        FindAncestorTask::new(current_block_number, 10, fetcher.clone()),
         3,
-        15,
-        1,
+        max_retry_times,
+        delay_milliseconds_on_error,
         AncestorCollector::new(Arc::new(MerkleAccumulator::new_with_info(
-            start.block_accumulator_info.clone(),
+            current_block_accumulator_info,
             storage.get_accumulator_store(AccumulatorStoreType::Block),
         ))),
         event_handle.clone(),
     )
     .and_then(move |ancestor, event_handle| {
         debug!("find ancestor: {:?}", ancestor);
+        let ancestor_block_info = storage.get_block_info(ancestor.id)?.ok_or_else(|| {
+            format_err!("Can not find ancestor block info by id: {}", ancestor.id)
+        })?;
+
         let accumulator_sync_task = BlockAccumulatorSyncTask::new(
+            // start_number is include, so start from ancestor.number + 1
             ancestor.number + 1,
             target_block_accumulator.clone(),
             accumulator_task_fetcher,
@@ -140,11 +151,11 @@ where
         Ok(TaskGenerator::new(
             accumulator_sync_task,
             3,
-            15,
-            1,
+            max_retry_times,
+            delay_milliseconds_on_error,
             AccumulatorCollector::new(
                 storage.get_accumulator_store(AccumulatorStoreType::Block),
-                start_block_accumulator_info,
+                ancestor_block_info.block_accumulator_info,
                 target_block_accumulator,
             ),
             event_handle,

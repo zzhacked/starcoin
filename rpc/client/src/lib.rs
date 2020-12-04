@@ -127,7 +127,7 @@ impl ConnectionProvider {
                     .compat()
                     .await
             }),
-            ConnSource::Local(channel) => Ok(*channel.clone()),
+            ConnSource::Local(channel) => Ok(*channel),
         }
     }
 }

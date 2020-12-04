@@ -6906,7 +6906,6 @@ dependencies = [
  "structopt 0.3.21",
  "test-helper",
  "tokio 0.2.23",
- "tokio-compat",
 ]
 
 [[package]]
@@ -7110,7 +7109,6 @@ dependencies = [
  "structopt 0.3.21",
  "tiny_http",
  "tokio 0.2.23",
- "tokio-compat",
  "tokio-executor 0.2.0-alpha.6",
 ]
 
@@ -7309,7 +7307,6 @@ dependencies = [
  "structopt 0.3.21",
  "thiserror",
  "tokio 0.2.23",
- "tokio-compat",
 ]
 
 [[package]]
@@ -7998,7 +7995,6 @@ dependencies = [
  "starcoin-types",
  "structopt 0.3.21",
  "tokio 0.2.23",
- "tokio-compat",
 ]
 
 [[package]]
@@ -8600,7 +8596,6 @@ dependencies = [
  "starcoin-vm-types",
  "static_assertions",
  "structopt 0.3.21",
- "tokio-compat",
 ]
 
 [[package]]

@@ -32,8 +32,7 @@ fn main() {
         }
     };
 
-    let mut rt = tokio_compat::runtime::Runtime::new().unwrap();
-    let client = match RpcClient::connect_websocket(&format!("ws://{}", opts.server), &mut rt) {
+    let client = match RpcClient::connect_websocket(&format!("ws://{}", opts.server)) {
         Ok(c) => c,
         Err(err) => {
             error!(

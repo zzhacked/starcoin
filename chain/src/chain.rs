@@ -687,7 +687,7 @@ impl BlockChain {
         &mut self,
         block_id: HashValue,
         transactions: Vec<Transaction>,
-        txn_infos: Option<(Vec<TransactionInfo>, Vec<Vec<ContractEvent>>)>,
+        txn_infos: (Vec<TransactionInfo>, Vec<Vec<ContractEvent>>),
     ) -> Result<()> {
         self.save(block_id, transactions, txn_infos)
     }
@@ -696,26 +696,24 @@ impl BlockChain {
         &mut self,
         block_id: HashValue,
         transactions: Vec<Transaction>,
-        txn_infos: Option<(Vec<TransactionInfo>, Vec<Vec<ContractEvent>>)>,
+        txn_infos: (Vec<TransactionInfo>, Vec<Vec<ContractEvent>>),
     ) -> Result<()> {
-        if txn_infos.is_some() {
-            let (txn_infos, txn_events) = txn_infos.expect("txn infos is none.");
-            ensure!(
-                transactions.len() == txn_infos.len(),
-                "block txns' length should be equal to txn infos' length"
-            );
-            ensure!(
-                txn_events.len() == txn_infos.len(),
-                "events' length should be equal to txn infos' length"
-            );
-            let txn_info_ids: Vec<_> = txn_infos.iter().map(|info| info.id()).collect();
-            for (info_id, events) in txn_info_ids.iter().zip(txn_events.into_iter()) {
-                self.storage.save_contract_events(*info_id, events)?;
-            }
-            self.storage
-                .save_block_txn_info_ids(block_id, txn_info_ids)?;
-            self.storage.save_transaction_infos(txn_infos)?;
+        let (txn_infos, txn_events) = txn_infos;
+        ensure!(
+            transactions.len() == txn_infos.len(),
+            "block txns' length should be equal to txn infos' length"
+        );
+        ensure!(
+            txn_events.len() == txn_infos.len(),
+            "events' length should be equal to txn infos' length"
+        );
+        let txn_info_ids: Vec<_> = txn_infos.iter().map(|info| info.id()).collect();
+        for (info_id, events) in txn_info_ids.iter().zip(txn_events.into_iter()) {
+            self.storage.save_contract_events(*info_id, events)?;
         }
+        self.storage
+            .save_block_txn_info_ids(block_id, txn_info_ids)?;
+        self.storage.save_transaction_infos(txn_infos)?;
 
         let txn_id_vec = transactions
             .iter()
@@ -1064,7 +1062,7 @@ impl BlockChain {
         self.save(
             block_id,
             txns,
-            Some((executed_data.txn_infos, executed_data.txn_events)),
+            (executed_data.txn_infos, executed_data.txn_events),
         )?;
         let block_state = BlockState::Executed;
         let uncles = block.uncles();

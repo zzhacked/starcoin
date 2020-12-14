@@ -398,7 +398,7 @@ async fn test_block_chain_txn_info_fork_mapping() -> Result<()> {
     Ok(())
 }
 
-fn test_save(txn_infos: Option<(Vec<TransactionInfo>, Vec<Vec<ContractEvent>>)>) -> Result<()> {
+fn test_save(txn_infos: (Vec<TransactionInfo>, Vec<Vec<ContractEvent>>)) -> Result<()> {
     let mut mock_chain = MockChain::new(ChainNetwork::new_test()).unwrap();
     mock_chain.produce_and_apply_times(10).unwrap();
     let block = mock_chain.head().head_block();
@@ -430,7 +430,7 @@ fn test_save(txn_infos: Option<(Vec<TransactionInfo>, Vec<Vec<ContractEvent>>)>)
 fn test_save_txn_len_failed() {
     let txn_infos = Vec::new();
     let events = Vec::new();
-    let result = test_save(Some((txn_infos, events)));
+    let result = test_save((txn_infos, events));
     assert!(result.is_err());
     error!("verify txns failed : {:?}", result);
 }
@@ -448,7 +448,7 @@ fn test_save_event_len_failed() {
     txn_infos.push(txn_info);
 
     let events = Vec::new();
-    let result = test_save(Some((txn_infos, events)));
+    let result = test_save((txn_infos, events));
     assert!(result.is_err());
     error!("verify txns failed : {:?}", result);
 }
@@ -473,6 +473,6 @@ fn test_save_succ() {
     event.push(e);
     events.push(event);
 
-    let result = test_save(Some((txn_infos, events)));
+    let result = test_save((txn_infos, events));
     assert!(result.is_ok());
 }

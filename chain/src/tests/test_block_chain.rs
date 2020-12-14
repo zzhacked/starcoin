@@ -16,7 +16,7 @@ use starcoin_types::account_address;
 use starcoin_types::block::{Block, BlockHeader};
 use starcoin_types::contract_event::ContractEvent;
 use starcoin_types::filter::Filter;
-use starcoin_types::transaction::{SignedUserTransaction, Transaction, TransactionInfo};
+use starcoin_types::transaction::{Transaction, TransactionInfo};
 use starcoin_vm_types::account_config::genesis_address;
 use starcoin_vm_types::genesis_config::{BuiltinNetworkID, ChainNetwork};
 use starcoin_vm_types::language_storage::TypeTag;
@@ -396,56 +396,6 @@ async fn test_block_chain_txn_info_fork_mapping() -> Result<()> {
     assert!(txn_info.is_some());
     assert_eq!(txn_info.unwrap().transaction_hash(), tnx_hash);
     Ok(())
-}
-
-#[stest::test]
-fn test_verify_txn() {
-    let mut mock_chain = MockChain::new(ChainNetwork::new_test()).unwrap();
-    mock_chain.produce_and_apply_times(10).unwrap();
-    let head = mock_chain.head();
-    let block = head.head_block();
-    let main_read = BlockChain::new(
-        head.time_service(),
-        block.header().parent_hash(),
-        mock_chain.head().get_storage(),
-    )
-    .unwrap();
-    let mut main_write = BlockChain::new(
-        head.time_service(),
-        block.header().parent_hash(),
-        mock_chain.head().get_storage(),
-    )
-    .unwrap();
-    let result = main_write.apply_without_execute(block, main_read.chain_state_reader());
-    assert!(result.is_ok());
-}
-
-fn verify_txn_failed(txns: &[Transaction]) {
-    let mut mock_chain = MockChain::new(ChainNetwork::new_test()).unwrap();
-    mock_chain.produce_and_apply_times(10).unwrap();
-    let head = mock_chain.head();
-    let header = head.current_header();
-    let main = BlockChainNotMock::new(
-        head.time_service(),
-        header.parent_hash(),
-        mock_chain.head().get_storage(),
-    )
-    .unwrap();
-    let result = main.verify_txns_for_test(header.id(), txns);
-    assert!(result.is_err());
-    error!("verify txns failed : {:?}", result);
-}
-
-#[stest::test]
-fn test_verify_txn_len() {
-    verify_txn_failed(Vec::new().as_slice())
-}
-
-#[stest::test]
-fn test_verify_txn_hash() {
-    let mut txns = Vec::new();
-    txns.push(Transaction::UserTransaction(SignedUserTransaction::mock()));
-    verify_txn_failed(txns.as_slice())
 }
 
 fn test_save(txn_infos: Option<(Vec<TransactionInfo>, Vec<Vec<ContractEvent>>)>) -> Result<()> {

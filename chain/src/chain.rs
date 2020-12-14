@@ -16,7 +16,7 @@ use starcoin_state_api::{AccountStateReader, ChainState, ChainStateReader, Chain
 use starcoin_statedb::ChainStateDB;
 use starcoin_types::contract_event::ContractEventInfo;
 use starcoin_types::filter::Filter;
-use starcoin_types::startup_info::ChainStatus;
+use starcoin_types::startup_info::{ChainInfo, ChainStatus};
 use starcoin_types::{
     account_address::AccountAddress,
     block::{
@@ -332,6 +332,15 @@ impl BlockChain {
 }
 
 impl ChainReader for BlockChain {
+    fn info(&self) -> ChainInfo {
+        unimplemented!()
+    }
+
+    fn status(&self) -> ChainStatus {
+        self.get_chain_status()
+            .expect("Get chain status should bean ok.")
+    }
+
     fn head_block(&self) -> Block {
         self.ensure_head().clone()
     }
@@ -480,6 +489,10 @@ impl ChainReader for BlockChain {
         self.get_epoch_info_by_number(None)
     }
 
+    fn epoch(&self) -> Epoch {
+        self.epoch.expect("Epoch should exist")
+    }
+
     fn get_epoch_info_by_number(&self, number: Option<BlockNumber>) -> Result<EpochInfo> {
         if let Some(block) = self.block_with_number(number)? {
             let chain_state = ChainStateDB::new(
@@ -574,6 +587,10 @@ impl ChainReader for BlockChain {
             TPS::new(total_txns, duration, total_txns / duration)
         };
         Ok(result)
+    }
+
+    fn time_service(&self) -> &dyn TimeService {
+        self.time_service.as_ref()
     }
 }
 

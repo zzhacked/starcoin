@@ -7088,6 +7088,7 @@ dependencies = [
  "starcoin-types",
  "starcoin-vm-types",
  "stest",
+ "thiserror",
 ]
 
 [[package]]

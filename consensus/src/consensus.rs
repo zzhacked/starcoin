@@ -10,13 +10,17 @@ use starcoin_types::{
 };
 use starcoin_vm_types::on_chain_resource::EpochInfo;
 use starcoin_vm_types::time::TimeService;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ConsensusVerifyError {
+    #[error("Verify Difficulty Error, expect: {0:?}, got: {0:?}")]
+    VerifyDifficultyError{expect:U256, U256},
+    VerifyTargetError,
+}
 
 pub trait Consensus {
-    fn calculate_next_difficulty(
-        &self,
-        reader: &dyn ChainReader,
-        epoch: &EpochInfo,
-    ) -> Result<U256>;
+    fn calculate_next_difficulty(&self, reader: &dyn ChainReader) -> Result<U256>;
 
     /// Calculate new block consensus header
     fn solve_consensus_nonce(
@@ -41,12 +45,10 @@ pub trait Consensus {
         nonce
     }
 
-    fn verify(
-        &self,
-        reader: &dyn ChainReader,
-        epoch: &EpochInfo,
-        header: &BlockHeader,
-    ) -> Result<()>;
+    fn verify(&self, reader: &dyn ChainReader, header: &BlockHeader) -> Result<()> {
+        let difficulty = self.calculate_next_difficulty(reader)?;
+        self.verify_header_difficulty(difficulty, header)
+    }
 
     /// Calculate the Pow hash for header
     fn calculate_pow_hash(&self, pow_header_blob: &[u8], nonce: u32) -> Result<HashValue>;

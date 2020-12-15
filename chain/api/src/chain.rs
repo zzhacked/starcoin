@@ -13,6 +13,7 @@ use starcoin_types::{
 use starcoin_vm_types::on_chain_resource::{EpochInfo, GlobalTimeOnChain, Epoch};
 use starcoin_types::startup_info::{ChainInfo, ChainStatus};
 use starcoin_vm_types::time::TimeService;
+use std::collections::HashSet;
 
 pub trait ChainReader {
     fn info(&self) -> ChainInfo,
@@ -38,7 +39,7 @@ pub trait ChainReader {
     fn get_total_difficulty(&self) -> Result<U256>;
     fn exist_block(&self, block_id: HashValue) -> bool;
     fn epoch_info(&self) -> Result<EpochInfo>;
-    fn epoch(&self) -> Epoch;
+    fn epoch(&self) -> &Epoch;
     fn get_epoch_info_by_number(&self, number: Option<BlockNumber>) -> Result<EpochInfo>;
     fn get_global_time_by_number(&self, number: BlockNumber) -> Result<GlobalTimeOnChain>;
     /// Get block id vec by BlockNumber, `start_number`'s block id is include.
@@ -57,6 +58,9 @@ pub trait ChainReader {
     /// Get tps for an epoch. The epoch includes the block given by `number`. If `number` is absent, return tps for the latest epoch
     fn tps(&self, number: Option<BlockNumber>) -> Result<TPS>;
     fn time_service(&self) -> &dyn TimeService;
+    fn fork(&self, block_id: HashValue) -> Result<Self> where Self:Sized;
+    fn epoch_uncles(&self) -> HashSet<HashValue>;
+    fn can_be_uncle(&self, header: &BlockHeader) -> bool;
 }
 
 pub trait ChainWriter {

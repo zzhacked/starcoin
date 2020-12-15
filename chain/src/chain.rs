@@ -592,6 +592,10 @@ impl ChainReader for BlockChain {
     fn time_service(&self) -> &dyn TimeService {
         self.time_service.as_ref()
     }
+
+    fn fork(&self, block_id: HashValue) -> Result<&dyn ChainReader> {
+        unimplemented!()
+    }
 }
 
 impl BlockChain {

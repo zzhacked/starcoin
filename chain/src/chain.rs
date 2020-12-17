@@ -13,7 +13,6 @@ use starcoin_chain_api::{
     verify_block, ChainReader, ChainWriter, ConnectBlockError, ExcludedTxns, ExecutedBlock,
     VerifiedBlock, VerifyBlockField,
 };
-use starcoin_executor::BlockExecutedData;
 use starcoin_open_block::OpenedBlock;
 use starcoin_state_api::{AccountStateReader, ChainState, ChainStateReader, ChainStateWriter};
 use starcoin_statedb::ChainStateDB;
@@ -32,9 +31,7 @@ use starcoin_types::{
 };
 use starcoin_vm_types::account_config::genesis_address;
 use starcoin_vm_types::genesis_config::ConsensusStrategy;
-use starcoin_vm_types::on_chain_resource::{
-    BlockMetadata, Epoch, EpochData, EpochInfo, GlobalTimeOnChain,
-};
+use starcoin_vm_types::on_chain_resource::{Epoch, EpochData, EpochInfo, GlobalTimeOnChain};
 use starcoin_vm_types::time::TimeService;
 use starcoin_vm_types::transaction::authenticator::AuthenticationKey;
 use std::cmp::min;
@@ -152,6 +149,7 @@ impl BlockChain {
         self.time_service.clone()
     }
 
+    //TODO lazy init uncles cache.
     pub fn update_uncle_cache(&mut self) -> Result<()> {
         self.uncles = self.epoch_uncles()?.iter().cloned().collect();
         Ok(())
@@ -320,6 +318,31 @@ impl BlockChain {
 
     pub fn can_be_uncle(&self, block_header: &BlockHeader) -> Result<bool> {
         FullVerifier::can_be_uncle(self, block_header)
+    }
+
+    pub fn verify_with_verifier<V>(&mut self, block: Block) -> Result<VerifiedBlock>
+    where
+        V: BlockVerifier,
+    {
+        V::verify_block(self, block)
+    }
+
+    pub fn apply_with_verifier<V>(&mut self, block: Block) -> Result<ExecutedBlock>
+    where
+        V: BlockVerifier,
+    {
+        let verified_block = self.verify_with_verifier::<V>(block)?;
+        let executed_block = self.execute(verified_block)?;
+        self.connect(executed_block)
+    }
+
+    //TODO remove this function.
+    pub fn update_chain_head(&mut self, block: Block) -> Result<ExecutedBlock> {
+        let block_info = self
+            .storage
+            .get_block_info(block.id())?
+            .ok_or_else(|| format_err!("Can not find block info by hash {:?}", block.id()))?;
+        self.connect(ExecutedBlock { block, block_info })
     }
 
     //TODO consider move this logic to BlockExecutor
@@ -868,37 +891,13 @@ impl BlockChain {
     }
 }
 
-impl BlockChain {
-    pub fn verify_with_verifier<V>(&mut self, block: Block) -> Result<VerifiedBlock>
-    where
-        V: BlockVerifier,
-    {
-        V::verify_block(self, block)
+impl ChainWriter for BlockChain {
+    fn can_connect(&self, executed_block: &ExecutedBlock) -> bool {
+        executed_block.block.header().parent_hash == self.status.status.head().id()
     }
 
-    pub fn apply_with_verifier<V>(&mut self, block: Block) -> Result<()>
-    where
-        V: BlockVerifier,
-    {
-        let verified_block = self.verify_with_verifier::<V>(block)?;
-        let executed_block = self.execute(verified_block)?;
-        self.connect(executed_block)
-    }
-
-    pub fn update_chain_head(&mut self, block: Block) -> Result<()> {
-        let block_info = self
-            .storage
-            .get_block_info(block.id())?
-            .ok_or_else(|| format_err!("Can not find block info by hash {:?}", block.id()))?;
-        self.update_chain_head_with_info(block, block_info)
-    }
-
-    //TODO refactor update_chain_head and update_chain_head_with_info
-    pub fn update_chain_head_with_info(
-        &mut self,
-        block: Block,
-        block_info: BlockInfo,
-    ) -> Result<()> {
+    fn connect(&mut self, executed_block: ExecutedBlock) -> Result<ExecutedBlock> {
+        let (block, block_info) = (executed_block.block(), executed_block.block_info());
         debug_assert!(block.header().parent_hash == self.status.status.head().id());
         //TODO try reuse accumulator and state db.
         let txn_accumulator_info = block_info.get_txn_accumulator_info();
@@ -920,28 +919,20 @@ impl BlockChain {
         if self.epoch.end_block_number() == block.header().number() {
             self.epoch = get_epoch_from_statedb(&self.statedb)?;
             self.update_uncle_cache()?;
-        } else {
-            if let Some(block_uncles) = block.uncles() {
-                block_uncles.iter().for_each(|header| {
-                    self.uncles.insert(header.id());
-                });
-            }
+        } else if let Some(block_uncles) = block.uncles() {
+            block_uncles.iter().for_each(|header| {
+                self.uncles.insert(header.id());
+            });
         }
         self.status = ChainStatusWithInfo {
             status: ChainStatus::new(block.header().clone(), block_info.total_difficulty),
-            info: block_info,
-            head: block,
+            info: block_info.clone(),
+            head: block.clone(),
         };
-        Ok(())
-    }
-}
-
-impl ChainWriter for BlockChain {
-    fn connect(&mut self, executed_block: ExecutedBlock) -> Result<()> {
-        self.update_chain_head_with_info(executed_block.block, executed_block.block_info)
+        Ok(executed_block)
     }
 
-    fn apply(&mut self, block: Block) -> Result<()> {
+    fn apply(&mut self, block: Block) -> Result<ExecutedBlock> {
         self.apply_with_verifier::<FullVerifier>(block)
     }
 

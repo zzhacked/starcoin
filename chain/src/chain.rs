@@ -489,7 +489,7 @@ impl BlockChain {
         storage.save_transaction_batch(transactions)?;
         //TODO rework on blockstate
         let block_state = BlockState::Executed;
-        storage.commit_block(block.clone(), block_state)?;
+        storage.commit_block(block, block_state)?;
         storage.save_block_info(block_info)?;
         Ok(())
     }
